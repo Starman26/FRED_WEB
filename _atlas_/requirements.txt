@@ -1,0 +1,29 @@
+# Core
+python-dotenv==1.0.0
+pydantic
+
+# LangGraph & LangChain
+langgraph
+langchain
+langchain-core
+langchain-openai
+langchain-community
+typing-extensions
+# Supabase
+supabase
+
+# Web Search
+langchain-tavily
+
+# Database & Async
+asyncpg
+sqlalchemy
+
+# Utilities
+requests
+aiohttp
+
+# Development (optional)
+pytest
+pytest-asyncio
+black
