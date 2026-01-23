@@ -27,3 +27,7 @@ aiohttp
 pytest
 pytest-asyncio
 black
+
+streamlit
+langgraph
+langchain-anthropic

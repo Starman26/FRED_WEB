@@ -166,6 +166,7 @@ class AgentState(TypedDict):
     task_type: str  # Tipo de tarea: 'tutor', 'troubleshooting', 'research', 'summarizer'
     user_name: str  # Nombre del usuario
     customer_id: Optional[str]  # ID del cliente para verificación
+    learning_style: Dict[str, Any]  # Estilo de aprendizaje del usuario (JSONB del profile)
     
     # ==========================================
     # 7. RESULTADOS DE WORKERS (Legacy/Compatibilidad)
@@ -212,6 +213,7 @@ STATE_DEFAULTS: Dict[str, Any] = {
     "task_type": "",
     "user_name": "Usuario",
     "customer_id": None,
+    "learning_style": {},
     
     # Resultados legacy
     "research_result": None,

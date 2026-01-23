@@ -15,6 +15,7 @@ from src.agent.state import AgentState
 from src.agent.contracts.worker_contract import WorkerOutputBuilder, EvidenceItem, create_error_output
 from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report, event_error
+from src.agent.utils.format_helpers import format_learning_style
 
 
 TUTOR_MULTISTEP_PROMPT = """Eres un **Tutor Técnico Especializado** experto en:
@@ -35,6 +36,7 @@ TUTOR_MULTISTEP_PROMPT = """Eres un **Tutor Técnico Especializado** experto en:
 4. **Responde en español**
 
 Nombre del usuario: {user_name}
+Forma de aprendiza del usuario: {learning_style}
 """
 
 
@@ -103,10 +105,15 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
         error_output = create_error_output("tutor", "LLM_INIT_ERROR", f"Error inicializando modelo: {str(e)}")
         return {"worker_outputs": [error_output.model_dump()], "tutor_result": error_output.model_dump_json(), "events": events}
     
+    # Formatear el learning_style del usuario
+    learning_style_raw = state.get("learning_style", {})
+    learning_style_text = format_learning_style(learning_style_raw)
+
     prompt = TUTOR_MULTISTEP_PROMPT.format(
         context_section=context_text if context_text != "Sin contexto previo." else "Primera interacción",
         evidence_section=evidence_text,
-        user_name=state.get("user_name", "Usuario")
+        user_name=state.get("user_name", "Usuario"),
+        learning_style=learning_style_text
     )
     
     messages = [SystemMessage(content=prompt)]

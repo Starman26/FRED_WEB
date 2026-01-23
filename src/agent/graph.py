@@ -6,10 +6,7 @@ START → bootstrap → intent_analyzer → plan → [worker1 → route → work
                                                         ↓
                                                    human_input (si necesita clarificación)
 """
-from typing import Optional
-
 from langgraph.graph import StateGraph, END, START
-from langgraph.checkpoint.memory import MemorySaver
 
 from src.agent.state import AgentState
 from src.agent.bootstrap import bootstrap_node
@@ -75,7 +72,7 @@ def route_after_human_input(state: AgentState) -> str:
     return "plan"
 
 
-def create_graph(enable_verification: bool = False, checkpointer: Optional[MemorySaver] = None) -> StateGraph:
+def create_graph(enable_verification: bool = False) -> StateGraph:
     """Crea el grafo principal con orchestration multi-step."""
     workflow = StateGraph(AgentState)
     
@@ -130,19 +127,18 @@ def create_graph(enable_verification: bool = False, checkpointer: Optional[Memor
         workflow.add_conditional_edges("human_input", route_after_human_input, {"verify_info": "verify_info", "route": "route", "plan": "plan"})
     else:
         workflow.add_conditional_edges("human_input", route_after_human_input, {"route": "route", "plan": "plan"})
-    
-    return workflow.compile(checkpointer=checkpointer) if checkpointer else workflow.compile()
+
+    return workflow.compile()
 
 
-# Grafo por defecto
-_checkpointer = MemorySaver()
-graph = create_graph(enable_verification=False, checkpointer=_checkpointer)
+# Grafo por defecto (sin checkpointer personalizado, LangGraph API maneja persistencia)
+graph = create_graph(enable_verification=False)
 supervisor_agent = graph  # Alias para langgraph.json
 
 
 def create_graph_with_verification() -> StateGraph:
     """Crea grafo con verificación de usuario"""
-    return create_graph(enable_verification=True, checkpointer=MemorySaver())
+    return create_graph(enable_verification=True)
 
 
 def get_graph_structure() -> dict:

@@ -24,6 +24,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from src.agent.state import AgentState
+from src.agent.services import get_supabase
 from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_read, event_report, event_error
 
@@ -83,7 +84,7 @@ Esto me permitirá acceder a tu información de forma segura."""
 def lookup_customer_by_id(supabase, customer_id: str) -> Optional[Dict[str, Any]]:
     """Busca cliente por ID en Supabase"""
     try:
-        response = supabase.table("customers").select("*").eq("id", customer_id).execute()
+        response = supabase.table("profiles").select("*").eq("id", customer_id).execute()
         if response.data:
             return response.data[0]
     except Exception as e:
@@ -94,7 +95,7 @@ def lookup_customer_by_id(supabase, customer_id: str) -> Optional[Dict[str, Any]
 def lookup_customer_by_email(supabase, email: str) -> Optional[Dict[str, Any]]:
     """Busca cliente por email en Supabase"""
     try:
-        response = supabase.table("customers").select("*").eq("email", email).execute()
+        response = supabase.table("profiles").select("*").eq("email", email).execute()
         if response.data:
             return response.data[0]
     except Exception as e:
@@ -108,13 +109,13 @@ def lookup_customer_by_phone(supabase, phone: str) -> Optional[Dict[str, Any]]:
         # Normalizar teléfono (quitar espacios, guiones)
         normalized_phone = re.sub(r"[\s\-\(\)]", "", phone)
         
-        response = supabase.table("customers").select("*").eq("phone", normalized_phone).execute()
+        response = supabase.table("profiles").select("*").eq("phone", normalized_phone).execute()
         if response.data:
             return response.data[0]
         
         # Intentar sin el prefijo +
         if normalized_phone.startswith("+"):
-            response = supabase.table("customers").select("*").eq("phone", normalized_phone[1:]).execute()
+            response = supabase.table("profiles").select("*").eq("phone", normalized_phone[1:]).execute()
             if response.data:
                 return response.data[0]
     except Exception as e:
@@ -280,22 +281,24 @@ def verify_info_node(state: AgentState) -> Dict[str, Any]:
     # Verificar en base de datos
     # ==========================================
     if identifier:
-        supabase = state.get("supabase")
+        supabase = get_supabase()
         customer_id, customer_data = get_customer_id_from_identifier(
             supabase, identifier, identifier_type
         )
         
         if customer_id:
             # ¡Verificación exitosa!
-            user_name = customer_data.get("name", state.get("user_name", "Usuario"))
-            
+            user_name = customer_data.get("full_name", customer_data.get("name", state.get("user_name", "Usuario")))
+            learning_style = customer_data.get("learning_style", {})
+
             confirmation_msg = f"✅ ¡Cuenta verificada! Hola {user_name} (ID: {customer_id})."
-            
-            logger.node_end("verify_info", {"status": "verified", "customer_id": customer_id})
-            
+
+            logger.node_end("verify_info", {"status": "verified", "customer_id": customer_id, "has_learning_style": bool(learning_style)})
+
             return {
                 "customer_id": customer_id,
                 "user_name": user_name,
+                "learning_style": learning_style,
                 "messages": [AIMessage(content=confirmation_msg)],
                 "next": "plan",  # Continuar al orchestrator
                 "events": events + [event_report("verify_info", f"Verificado: {customer_id}")],
