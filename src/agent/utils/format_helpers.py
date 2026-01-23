@@ -4,15 +4,17 @@ format_helpers.py - Helpers para formatear datos complejos a texto legible
 Este módulo contiene funciones para convertir estructuras de datos complejas
 (como JSONB) a texto descriptivo para usar en prompts del LLM.
 """
-from typing import Dict, Any
+import json
+from typing import Dict, Any, Union
 
 
-def format_learning_style(learning_style: Dict[str, Any]) -> str:
+def format_learning_style(learning_style: Union[Dict[str, Any], str, None]) -> str:
     """
     Convierte el JSONB de learning_style del profile a texto descriptivo.
 
     Args:
-        learning_style: Dict con las preferencias de aprendizaje del usuario
+        learning_style: Dict con las preferencias de aprendizaje del usuario,
+                       o string JSON que se parseará automáticamente
 
     Returns:
         String con descripción del estilo de aprendizaje
@@ -21,10 +23,21 @@ def format_learning_style(learning_style: Dict[str, Any]) -> str:
         >>> format_learning_style({"type": "visual", "pace": "fast"})
         "Visual (ritmo rápido)"
 
+        >>> format_learning_style('{"type": "visual"}')
+        "Visual - Aprende mejor con diagramas, esquemas y ejemplos gráficos"
+
         >>> format_learning_style({})
         "General (adaptativo)"
     """
-    if not learning_style:
+    # Si learning_style es un string (JSON de Supabase), parsearlo
+    if isinstance(learning_style, str):
+        try:
+            learning_style = json.loads(learning_style)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return "General (adaptativo)"
+
+    # Validar que sea un dict válido
+    if not learning_style or not isinstance(learning_style, dict):
         return "General (adaptativo)"
 
     parts = []

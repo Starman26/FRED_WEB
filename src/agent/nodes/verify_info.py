@@ -289,7 +289,16 @@ def verify_info_node(state: AgentState) -> Dict[str, Any]:
         if customer_id:
             # ¡Verificación exitosa!
             user_name = customer_data.get("full_name", customer_data.get("name", state.get("user_name", "Usuario")))
-            learning_style = customer_data.get("learning_style", {})
+
+            # Priorizar learning_style de la BD, pero usar el del estado si no existe
+            learning_style_db = customer_data.get("learning_style")
+            learning_style_state = state.get("learning_style", {})
+
+            # Si hay en BD y no está vacío, usarlo; sino usar el del estado
+            if learning_style_db and (isinstance(learning_style_db, dict) or isinstance(learning_style_db, str)):
+                learning_style = learning_style_db
+            else:
+                learning_style = learning_style_state
 
             confirmation_msg = f"✅ ¡Cuenta verificada! Hola {user_name} (ID: {customer_id})."
 

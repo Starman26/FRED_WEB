@@ -16,6 +16,13 @@ from src.agent.contracts.worker_contract import WorkerOutputBuilder, EvidenceIte
 from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report, event_error
 from src.agent.utils.format_helpers import format_learning_style
+from src.agent.prompts.tutor_prompt import (
+    VISUAL_TUTOR,
+    AUDITIVE_TUTOR,
+    KINESTHETIC_TUTOR,
+    READING_TUTOR,
+    MIX_TUTOR
+)
 
 
 TUTOR_MULTISTEP_PROMPT = """Eres un **Tutor Técnico Especializado** experto en:
@@ -34,10 +41,48 @@ TUTOR_MULTISTEP_PROMPT = """Eres un **Tutor Técnico Especializado** experto en:
 2. **Estructura clara**: Usa encabezados y listas cuando ayuden
 3. **Sé didáctico**: Explica paso a paso, con ejemplos
 4. **Responde en español**
+5. **Dependiendo de la forma de aprendizaje del usuario usa diferentes tonos**
+
+{learning_style_guidance}
 
 Nombre del usuario: {user_name}
-Forma de aprendiza del usuario: {learning_style}
+Perfil de aprendizaje: {learning_style}
+
 """
+
+
+def get_learning_style_prompt(learning_style_dict: Dict[str, Any]) -> str:
+    """
+    Selecciona el prompt de estilo de aprendizaje apropiado basado en el tipo.
+
+    Args:
+        learning_style_dict: Diccionario con el learning_style del usuario
+
+    Returns:
+        El prompt específico para ese estilo de aprendizaje
+    """
+    if not learning_style_dict or not isinstance(learning_style_dict, dict):
+        return MIX_TUTOR  # Default: mixto
+
+    learning_type = learning_style_dict.get("type", "").lower()
+
+    # Mapeo de tipos a prompts
+    style_map = {
+        "visual": VISUAL_TUTOR,
+        "auditory": AUDITIVE_TUTOR,
+        "auditivo": AUDITIVE_TUTOR,
+        "kinesthetic": KINESTHETIC_TUTOR,
+        "kinestésico": KINESTHETIC_TUTOR,
+        "kinesthesic": KINESTHETIC_TUTOR,
+        "reading": READING_TUTOR,
+        "lectura": READING_TUTOR,
+        "mixed": MIX_TUTOR,
+        "mixto": MIX_TUTOR,
+        "both": MIX_TUTOR,
+        "ambos": MIX_TUTOR,
+    }
+
+    return style_map.get(learning_type, MIX_TUTOR)
 
 
 def get_last_user_message(state: AgentState) -> str:
@@ -109,9 +154,13 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
     learning_style_raw = state.get("learning_style", {})
     learning_style_text = format_learning_style(learning_style_raw)
 
+    # Seleccionar el prompt de estilo de aprendizaje apropiado
+    learning_style_guidance = get_learning_style_prompt(learning_style_raw)
+
     prompt = TUTOR_MULTISTEP_PROMPT.format(
         context_section=context_text if context_text != "Sin contexto previo." else "Primera interacción",
         evidence_section=evidence_text,
+        learning_style_guidance=learning_style_guidance,
         user_name=state.get("user_name", "Usuario"),
         learning_style=learning_style_text
     )

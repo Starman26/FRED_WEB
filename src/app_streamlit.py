@@ -139,6 +139,12 @@ def initialize_session_state():
     defaults = {
         "messages": [],
         "user_name": "Usuario",
+        "learning_style": {
+            "type": "visual",
+            "pace": "medium",
+            "depth": "intermediate",
+            "examples": "practical"
+        },
         "window_count": 0,
         "rolling_summary": "",
         "is_loading": False,
@@ -405,6 +411,56 @@ def main():
         )
         st.session_state.user_name = user_name
 
+        # Learning Style - Estilo de aprendizaje estructurado
+        st.subheader("📚 Estilo de aprendizaje")
+
+        # Obtener valores actuales del dict
+        current_style = st.session_state.learning_style
+        if isinstance(current_style, str):
+            # Si es string, usar valores por defecto
+            current_style = {
+                "type": "visual",
+                "pace": "medium",
+                "depth": "intermediate",
+                "examples": "practical"
+            }
+
+        learning_type = st.selectbox(
+            "Tipo de aprendizaje",
+            options=["visual", "auditory", "kinesthetic", "reading"],
+            index=["visual", "auditory", "kinesthetic", "reading"].index(current_style.get("type", "visual")),
+            help="Cómo prefieres recibir información"
+        )
+
+        pace = st.selectbox(
+            "Ritmo",
+            options=["slow", "medium", "fast"],
+            index=["slow", "medium", "fast"].index(current_style.get("pace", "medium")),
+            help="Velocidad de las explicaciones"
+        )
+
+        depth = st.selectbox(
+            "Profundidad",
+            options=["basic", "intermediate", "advanced"],
+            index=["basic", "intermediate", "advanced"].index(current_style.get("depth", "intermediate")),
+            help="Nivel de detalle técnico"
+        )
+
+        examples = st.selectbox(
+            "Ejemplos",
+            options=["theoretical", "practical", "both"],
+            index=["theoretical", "practical", "both"].index(current_style.get("examples", "practical")),
+            help="Tipo de ejemplos preferidos"
+        )
+
+        # Crear el dict estructurado
+        st.session_state.learning_style = {
+            "type": learning_type,
+            "pace": pace,
+            "depth": depth,
+            "examples": examples
+        }
+
         st.divider()
         st.subheader("🆔 Sesión")
         st.code(st.session_state.thread_id[:20] + "...", language=None)
@@ -568,6 +624,7 @@ def main():
             payload = {
                 "messages": [HumanMessage(content=user_input)],
                 "user_name": st.session_state.user_name,
+                "learning_style": st.session_state.learning_style,
                 "window_count": st.session_state.window_count,
                 "rolling_summary": st.session_state.rolling_summary,
             }
