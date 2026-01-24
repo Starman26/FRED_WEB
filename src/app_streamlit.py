@@ -124,12 +124,101 @@ def install_log_handler_once():
 # ============================================
 
 def load_graph():
+    """
+    Carga el grafo con un checkpointer persistente en session_state.
+    """
+    # Si ya existe el grafo en session_state, usarlo
+    if "langgraph_instance" in st.session_state:
+        return st.session_state.langgraph_instance
+    
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-        from src.agent.graph import graph
-        logger.info("✅ Grafo cargado correctamente")
+        
+        from langgraph.checkpoint.memory import MemorySaver
+        from langgraph.graph import StateGraph, END
+        from src.agent.state import AgentState
+        from src.agent.bootstrap import bootstrap_node
+        from src.agent.orchestrator import orchestrator_plan_node, orchestrator_route_node, synthesize_node
+        from src.agent.nodes.human_input import human_input_node
+        from src.agent.nodes.intent_analyzer import intent_analyzer_node
+        from src.agent.workers.chat_node import chat_node
+        from src.agent.workers.research_node import research_node
+        from src.agent.workers.tutor_node import tutor_node
+        from src.agent.workers.troubleshooter_node import troubleshooter_node
+        from src.agent.workers.summarizer_node import summarizer_node
+        
+        # Crear checkpointer persistente
+        if "langgraph_checkpointer" not in st.session_state:
+            st.session_state.langgraph_checkpointer = MemorySaver()
+            logger.info("🗄️ Checkpointer creado")
+        
+        # Construir el grafo manualmente
+        workflow = StateGraph(AgentState)
+        
+        workflow.add_node("bootstrap", bootstrap_node)
+        workflow.add_node("intent_analyzer", intent_analyzer_node)
+        workflow.add_node("plan", orchestrator_plan_node)
+        workflow.add_node("route", orchestrator_route_node)
+        workflow.add_node("synthesize", synthesize_node)
+        workflow.add_node("human_input", human_input_node)
+        workflow.add_node("chat", chat_node)
+        workflow.add_node("research", research_node)
+        workflow.add_node("tutor", tutor_node)
+        workflow.add_node("troubleshooting", troubleshooter_node)
+        workflow.add_node("summarizer", summarizer_node)
+        
+        workflow.set_entry_point("bootstrap")
+        workflow.add_edge("bootstrap", "intent_analyzer")
+        workflow.add_edge("intent_analyzer", "plan")
+        
+        def route_from_plan(state):
+            next_node = state.get("next", "chat")
+            valid = {"chat", "research", "tutor", "troubleshooting", "summarizer"}
+            if next_node in valid:
+                return next_node
+            elif next_node in ("END", "__end__", "end"):
+                return "END"
+            return "chat"
+        
+        def route_from_orchestrator(state):
+            if state.get("needs_human_input"):
+                return "human_input"
+            next_node = state.get("next", "END")
+            valid = {"chat", "research", "tutor", "troubleshooting", "summarizer", "synthesize", "human_input", "END"}
+            return next_node if next_node in valid else "END"
+        
+        def route_after_human_input(state):
+            if state.get("orchestration_plan"):
+                return "route"
+            return "plan"
+        
+        workflow.add_conditional_edges("plan", route_from_plan, {
+            "chat": "chat", "research": "research", "tutor": "tutor", 
+            "troubleshooting": "troubleshooting", "summarizer": "summarizer", "END": END
+        })
+        
+        for worker in ["chat", "research", "tutor", "troubleshooting", "summarizer"]:
+            workflow.add_edge(worker, "route")
+        
+        workflow.add_conditional_edges("route", route_from_orchestrator, {
+            "chat": "chat", "research": "research", "tutor": "tutor", 
+            "troubleshooting": "troubleshooting", "summarizer": "summarizer", 
+            "synthesize": "synthesize", "human_input": "human_input", "END": END
+        })
+        
+        workflow.add_edge("synthesize", END)
+        workflow.add_conditional_edges("human_input", route_after_human_input, {
+            "route": "route", "plan": "plan"
+        })
+        
+        # Compilar CON checkpointer
+        graph = workflow.compile(checkpointer=st.session_state.langgraph_checkpointer)
+        
+        st.session_state.langgraph_instance = graph
+        logger.info("✅ Grafo cargado con checkpointer persistente")
         return graph
-    except ImportError as e:
+        
+    except Exception as e:
         logger.error(f"❌ Error al cargar el grafo: {str(e)}")
         st.error(f"Error al cargar el grafo: {str(e)}")
         st.stop()
@@ -139,6 +228,12 @@ def initialize_session_state():
     defaults = {
         "messages": [],
         "user_name": "Usuario",
+        "learning_style": {
+            "type": "visual",
+            "pace": "medium",
+            "depth": "intermediate",
+            "examples": "practical"
+        },
         "window_count": 0,
         "rolling_summary": "",
         "is_loading": False,
@@ -405,17 +500,69 @@ def main():
         )
         st.session_state.user_name = user_name
 
+        # Learning Style - Estilo de aprendizaje estructurado
+        st.subheader("📚 Estilo de aprendizaje")
+
+        # Obtener valores actuales del dict
+        current_style = st.session_state.learning_style
+        if isinstance(current_style, str):
+            # Si es string, usar valores por defecto
+            current_style = {
+                "type": "visual",
+                "pace": "medium",
+                "depth": "intermediate",
+                "examples": "practical"
+            }
+
+        learning_type = st.selectbox(
+            "Tipo de aprendizaje",
+            options=["visual", "auditory", "kinesthetic", "reading"],
+            index=["visual", "auditory", "kinesthetic", "reading"].index(current_style.get("type", "visual")),
+            help="Cómo prefieres recibir información"
+        )
+
+        pace = st.selectbox(
+            "Ritmo",
+            options=["slow", "medium", "fast"],
+            index=["slow", "medium", "fast"].index(current_style.get("pace", "medium")),
+            help="Velocidad de las explicaciones"
+        )
+
+        depth = st.selectbox(
+            "Profundidad",
+            options=["basic", "intermediate", "advanced"],
+            index=["basic", "intermediate", "advanced"].index(current_style.get("depth", "intermediate")),
+            help="Nivel de detalle técnico"
+        )
+
+        examples = st.selectbox(
+            "Ejemplos",
+            options=["theoretical", "practical", "both"],
+            index=["theoretical", "practical", "both"].index(current_style.get("examples", "practical")),
+            help="Tipo de ejemplos preferidos"
+        )
+
+        # Crear el dict estructurado
+        st.session_state.learning_style = {
+            "type": learning_type,
+            "pace": pace,
+            "depth": depth,
+            "examples": examples
+        }
+
         st.divider()
         st.subheader("🆔 Sesión")
         st.code(st.session_state.thread_id[:20] + "...", language=None)
 
         if st.button("🔄 Nueva conversación"):
-            for key in ["thread_id", "messages", "window_count", "rolling_summary",
-                       "pending_interrupt", "raw_logs", "pending_questions",
-                       "pending_content", "current_question_idx", "question_answers"]:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
+                    for key in ["thread_id", "messages", "window_count", "rolling_summary",
+                            "pending_interrupt", "raw_logs", "pending_questions",
+                            "pending_content", "current_question_idx", "question_answers",
+                            "langgraph_checkpointer", "langgraph_instance"]:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                    logger.info("🔄 Sesión reiniciada - checkpointer limpio")  # ← DENTRO del if
+                    st.rerun()  # ← DENTRO del if
 
         st.divider()
         st.subheader("📊 Estado")
@@ -463,16 +610,31 @@ def main():
                 with st.chat_message(role):
                     st.write(content)
 
-    # ============================================
+# ============================================
     # MODO PREGUNTAS (Human-in-the-Loop)
     # ============================================
     if st.session_state.pending_questions:
         st.divider()
         
         # Mostrar el contenido del worker ANTES de las preguntas
-        if st.session_state.get("pending_content"):
+        # PERO filtrar si el contenido es solo las preguntas formateadas
+        pending_content = st.session_state.get("pending_content", "")
+        
+        # Detectar si el contenido es solo el wizard de preguntas (no mostrarlo)
+        is_just_questions = any(indicator in pending_content for indicator in [
+            "Paso 1 de",
+            "[●○○]",
+            "[○○○]", 
+            "📍 Paso",
+            "🔧 Información de diagnóstico\nNecesito",
+            "🏭 Diagnóstico del Laboratorio\n",
+            "📋 Información adicional\n",
+        ])
+        
+        # Solo mostrar si hay contenido útil (ej: errores encontrados)
+        if pending_content and not is_just_questions:
             with st.chat_message("assistant"):
-                st.markdown(st.session_state.pending_content)
+                st.markdown(pending_content)
         
         st.subheader("📋 Necesito más información")
         
@@ -568,6 +730,7 @@ def main():
             payload = {
                 "messages": [HumanMessage(content=user_input)],
                 "user_name": st.session_state.user_name,
+                "learning_style": st.session_state.learning_style,
                 "window_count": st.session_state.window_count,
                 "rolling_summary": st.session_state.rolling_summary,
             }
