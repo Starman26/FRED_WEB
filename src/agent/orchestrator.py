@@ -309,11 +309,6 @@ def orchestrator_plan_node(state: AgentState) -> Dict[str, Any]:
 def orchestrator_route_node(state: AgentState) -> Dict[str, Any]:
     """
     Nodo de decisión: Después de cada worker, decide el siguiente paso.
-    
-    Este nodo:
-    1. Revisa el último output del worker
-    2. Verifica si se necesita human-in-the-loop
-    3. Avanza al siguiente worker o finaliza
     """
     logger.node_start("orchestrator_route", {
         "plan": state.get("orchestration_plan"),
@@ -323,63 +318,67 @@ def orchestrator_route_node(state: AgentState) -> Dict[str, Any]:
     plan = state.get("orchestration_plan", [])
     current_step = state.get("current_step", 0)
     worker_outputs = state.get("worker_outputs", [])
-    pending_context = state.get("pending_context", {})
+    pending_context = state.get("pending_context", {}) or {}
+    
+    # IMPORTANTE: Buscar preguntas en el STATE también
+    state_questions = state.get("clarification_questions", [])
     
     events = [event_route("orchestrator", "Evaluando siguiente paso...", route="pending")]
     
     # Obtener el último output del worker
     last_output = worker_outputs[-1] if worker_outputs else None
     
-    # ==========================================
-    # VERIFICAR SI YA TENEMOS CLARIFICACIÓN DEL USUARIO
-    # ==========================================
-    # Si pending_context tiene user_clarification, significa que el usuario
-    # ya respondió a las preguntas. NO volver a pedir.
+    # Verificar si ya tenemos clarificación del usuario
     has_user_clarification = bool(pending_context.get("user_clarification"))
+    wizard_completed = pending_context.get("wizard_completed", False)
     
-    if last_output:
-        # ==========================================
-        # Verificar si necesita input humano
-        # SOLO si NO tenemos ya la clarificación
-        # ==========================================
-        if last_output.get("status") == "needs_context" and not has_user_clarification:
-            questions = last_output.get("clarification_questions", [])
-            logger.info("orchestrator_route", f"Worker necesita contexto, {len(questions)} preguntas")
+    logger.info("orchestrator_route", f"has_clarification={has_user_clarification}, wizard_completed={wizard_completed}, last_output_status={last_output.get('status') if last_output else 'None'}")
+    
+    # ==========================================
+    # CASO 1: Usuario ya respondió - re-ejecutar worker
+    # ==========================================
+    if has_user_clarification or wizard_completed:
+        current_worker = plan[current_step] if current_step < len(plan) else None
+        if current_worker:
+            logger.info("orchestrator_route", f"✅ Re-ejecutando {current_worker} con clarificación del usuario")
+            
+            # Limpiar outputs con needs_context para evitar loop
+            updated_outputs = [o for o in worker_outputs if o.get("status") != "needs_context"]
             
             return {
-                "needs_human_input": True,
-                "clarification_questions": questions,
-                "next": "human_input",
-                "events": events + [event_route("orchestrator", "Requiere input humano", route="human_input")],
+                "worker_outputs": updated_outputs,
+                "clarification_questions": [],  # Limpiar
+                "needs_human_input": False,
+                "next": current_worker,
+                "task_type": current_worker,
+                "events": events + [event_route("orchestrator", f"Continuando {current_worker} con info del usuario", route=current_worker)],
             }
-        
-        # Si teníamos needs_context pero ya hay clarificación,
-        # re-ejecutar el worker actual con la nueva información
-        if last_output.get("status") == "needs_context" and has_user_clarification:
-            current_worker = plan[current_step] if current_step < len(plan) else None
-            if current_worker:
-                logger.info("orchestrator_route", f"Re-ejecutando {current_worker} con clarificación del usuario")
-                
-                # Limpiar el output anterior de needs_context para que no se repita
-                # Filtramos el último output que tenía needs_context
-                updated_outputs = [o for o in worker_outputs if o.get("status") != "needs_context"]
-                
-                return {
-                    "worker_outputs": updated_outputs,
-                    "next": current_worker,
-                    "task_type": current_worker,
-                    "events": events + [event_route("orchestrator", f"Continuando {current_worker} con info adicional", route=current_worker)],
-                }
     
     # ==========================================
-    # Avanzar al siguiente step
+    # CASO 2: Worker necesita input - ir a human_input
+    # ==========================================
+    if last_output and last_output.get("status") == "needs_context":
+        # Buscar preguntas: primero en worker_output, luego en state
+        questions = last_output.get("clarification_questions", [])
+        if not questions:
+            questions = state_questions
+        
+        logger.info("orchestrator_route", f"Worker necesita contexto, {len(questions)} preguntas")
+        
+        return {
+            "needs_human_input": True,
+            "clarification_questions": questions,
+            "next": "human_input",
+            "events": events + [event_route("orchestrator", "Requiere input humano", route="human_input")],
+        }
+    
+    # ==========================================
+    # CASO 3: Avanzar al siguiente step
     # ==========================================
     next_step = current_step + 1
     
     if next_step >= len(plan):
-        # Plan completado → Sintetizar y terminar
         logger.info("orchestrator_route", "Plan completado, sintetizando...")
-        
         return {
             "orchestration_plan": plan,
             "current_step": next_step,
@@ -388,23 +387,11 @@ def orchestrator_route_node(state: AgentState) -> Dict[str, Any]:
             "events": events + [event_route("orchestrator", "Plan completado", route="synthesize")],
         }
     
-    # ==========================================
     # Preparar contexto para el siguiente worker
-    # ==========================================
-    # Acumular evidencia de outputs anteriores
     for output in worker_outputs:
         evidence = output.get("evidence", [])
         if evidence:
             pending_context["evidence"] = pending_context.get("evidence", []) + evidence
-        
-        summary = output.get("summary", "")
-        if summary:
-            prior_summaries = pending_context.get("prior_summaries", [])
-            prior_summaries.append({
-                "worker": output.get("worker"),
-                "summary": summary
-            })
-            pending_context["prior_summaries"] = prior_summaries
     
     next_worker = plan[next_step]
     logger.info("orchestrator_route", f"Siguiente worker: {next_worker}")
@@ -417,7 +404,6 @@ def orchestrator_route_node(state: AgentState) -> Dict[str, Any]:
         "task_type": next_worker,
         "events": events + [event_route("orchestrator", f"Continuando con {next_worker}", route=next_worker)],
     }
-
 
 def synthesize_node(state: AgentState) -> Dict[str, Any]:
     """
