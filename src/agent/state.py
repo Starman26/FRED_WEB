@@ -143,10 +143,16 @@ class AgentState(TypedDict):
     pending_context: Annotated[Dict[str, Any], merge_dicts]  # Contexto para siguiente worker
     
     # ==========================================
-    # 4. HUMAN-IN-THE-LOOP (NUEVO)
+    # 4. HUMAN-IN-THE-LOOP (NUEVO) - Con soporte Wizard
     # ==========================================
     needs_human_input: bool  # True si hay que pausar para input del usuario
-    clarification_questions: List[str]  # Preguntas para el usuario
+    clarification_questions: List[Any]  # Preguntas (strings o ClarificationQuestion dicts)
+    # NOTA: El estado del wizard se almacena en pending_context["wizard_state"]
+    # pending_context también puede contener:
+    #   - "question_set": QuestionSet serializado para iniciar wizard
+    #   - "wizard_responses": Respuestas estructuradas del wizard
+    #   - "wizard_completed": True si el wizard se completó
+    #   - "wizard_cancelled": True si el usuario canceló
     
     # ==========================================
     # 4.5. ANÁLISIS DE INTENCIÓN (NUEVO)

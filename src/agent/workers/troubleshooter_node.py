@@ -22,9 +22,16 @@ from src.agent.contracts.question_schema import (
     QuestionSet,
     ClarificationQuestion,
     QuestionOption,
+    QuestionType,
+    QuickReply,
     TROUBLESHOOTING_QUESTIONS,
     create_choice_question,
     create_text_question,
+    create_boolean_question,
+    create_wizard,
+    create_quick_form,
+    get_troubleshooting_questions,
+    get_repair_confirmation_wizard,
 )
 from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report, event_error
@@ -185,11 +192,17 @@ def generate_dynamic_questions(
         if not questions:
             logger.warning("troubleshooter_node", "LLM no generó preguntas válidas")
             return None
-        
-        return QuestionSet(
+
+        # Usar wizard mode para mejor UX
+        return create_wizard(
+            worker="troubleshooting",
+            title="🔧 Información de diagnóstico",
             questions=questions,
-            context=data.get("context", "Necesito más información:"),
-            worker="troubleshooting"
+            context=data.get("context", "Necesito más información para ayudarte:"),
+            max_questions=5,
+            allow_back=True,
+            allow_skip=True,
+            completion_message="✅ ¡Gracias! Ya tengo la información necesaria para diagnosticar tu problema."
         )
         
     except json.JSONDecodeError as e:
@@ -656,12 +669,17 @@ def create_lab_questions(
         ))
     
     if questions:
-        return QuestionSet(
-            questions=questions[:3],
-            context="Para diagnosticar el problema en el laboratorio, necesito saber:",
-            worker="troubleshooting"
+        return create_wizard(
+            worker="troubleshooting",
+            title="🏭 Diagnóstico del Laboratorio",
+            questions=questions[:5],
+            context="Para diagnosticar el problema en el laboratorio, vamos paso a paso.",
+            max_questions=5,
+            allow_back=True,
+            allow_skip=False,  # Las preguntas del lab son importantes
+            completion_message="✅ ¡Perfecto! Ahora puedo analizar el problema con la información proporcionada."
         )
-    
+
     return None
 
 
@@ -1264,21 +1282,9 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
                 # Obtener el contenido con los errores encontrados (SIN la pregunta)
                 errors_content = result.get("content", "Se encontraron problemas")
                 
-                # Crear pregunta de confirmación
-                confirmation_question = create_choice_question(
-                    "repair_confirmation",
-                    "¿Quieres que intente reparar estos problemas automáticamente?",
-                    [
-                        ("yes", "Sí, arréglalo", "Ejecutar reparación automática"),
-                        ("no", "No, solo quería ver el estado", "No hacer cambios"),
-                    ],
-                    include_other=False
-                )
-                
-                question_set = QuestionSet(
-                    questions=[confirmation_question],
-                    context="",
-                    worker="troubleshooting"
+                # Crear wizard de confirmación
+                question_set = get_repair_confirmation_wizard(
+                    f"Reparar {total_problems} problema(s) encontrado(s) en el laboratorio"
                 )
                 
                 # Guardar contexto para cuando confirme
@@ -1440,20 +1446,41 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
             question_set = create_lab_questions(user_message, equipment, station_num)
         
         # ==========================================
-        # OPCIÓN 3: Fallback último - preguntas genéricas
+        # OPCIÓN 3: Fallback último - preguntas genéricas con wizard
         # ==========================================
         if not question_set and len(user_message.split()) < 10:
-            # Solo para mensajes muy cortos, usar template básico
-            question_set = QuestionSet(
+            # Solo para mensajes muy cortos, usar wizard básico
+            question_set = create_wizard(
+                worker="troubleshooting",
+                title="📋 Información adicional",
                 questions=[
+                    create_choice_question(
+                        "problem_type",
+                        "¿Qué tipo de ayuda necesitas?",
+                        [
+                            ("1", "Diagnóstico de problema", "Algo no funciona correctamente", "🔧"),
+                            ("2", "Ejecutar una acción", "Iniciar/parar equipo", "▶️"),
+                            ("3", "Consultar estado", "Ver información del sistema", "📊"),
+                            ("4", "Pregunta técnica", "Cómo hacer algo", "❓"),
+                        ],
+                        include_other=True,
+                        help_text="Selecciona la opción que mejor describa tu necesidad"
+                    ),
                     create_text_question(
                         "more_details",
-                        "¿Podrías darme más detalles sobre tu consulta?",
-                        "Describe el problema o lo que necesitas..."
-                    )
+                        "¿Podrías darme más detalles?",
+                        placeholder="Describe el problema, equipo, o lo que necesitas...",
+                        min_length=5,
+                        help_text="Entre más detalles, mejor podré ayudarte",
+                        quick_replies=[
+                            QuickReply(id="plc", label="Problema con PLC", value="Tengo un problema con la PLC", icon="🔌"),
+                            QuickReply(id="cobot", label="Problema con Cobot", value="Tengo un problema con el cobot", icon="🤖"),
+                        ]
+                    ),
                 ],
-                context="Tu mensaje es un poco breve. Para ayudarte mejor:",
-                worker="troubleshooting"
+                context="Tu mensaje es un poco breve. Vamos a identificar cómo puedo ayudarte:",
+                allow_skip=True,
+                completion_message="✅ ¡Entendido! Ahora puedo analizar tu solicitud."
             )
         
         if question_set:
@@ -1462,19 +1489,26 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
             updated_context["is_lab_related"] = is_lab
             updated_context["detected_station"] = station_num
             updated_context["detected_equipment"] = equipment
-            
+            # Store the full question set for wizard mode
+            updated_context["question_set"] = question_set.model_dump_json()
+            updated_context["current_worker"] = "troubleshooting"
+
+            # Display text shows first question in wizard mode
+            display_text = question_set.to_display_text(current_step=0)
+
             output = WorkerOutputBuilder.troubleshooting(
-                content=question_set.to_display_text(),
+                content=display_text,
                 problem_identified="Recopilando información",
                 severity="pending",
                 summary="Necesito más información",
                 confidence=0.0,
                 status="needs_context"
             )
-            
+
             questions_data = question_set.to_dict_list()
-            events.append(event_report("troubleshooting", f"📋 {len(questions_data)} preguntas generadas"))
-            
+            wizard_mode = "wizard" if question_set.wizard_mode else "form"
+            events.append(event_report("troubleshooting", f"📋 {len(questions_data)} preguntas ({wizard_mode})"))
+
             return {
                 "worker_outputs": [output.model_dump()],
                 "troubleshooting_result": output.model_dump_json(),

@@ -108,9 +108,16 @@ class WorkerOutput(BaseModel):
     )
     
     # Preguntas para human-in-the-loop
-    clarification_questions: List[str] = Field(
+    # Puede ser List[str] (legacy) o List[Dict] (ClarificationQuestion serializado)
+    clarification_questions: List[Any] = Field(
         default_factory=list,
-        description="Preguntas para el usuario si status=needs_context"
+        description="Preguntas para el usuario si status=needs_context. Puede ser strings o ClarificationQuestion dicts"
+    )
+
+    # Configuración del wizard (opcional)
+    wizard_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Configuración del wizard interactivo (wizard_mode, max_questions, etc.)"
     )
     
     # Errores
@@ -207,17 +214,91 @@ def create_error_output(
 
 def create_needs_context_output(
     worker: str,
-    questions: List[str],
-    partial_content: str = ""
+    questions: List[Any],
+    partial_content: str = "",
+    wizard_mode: bool = False,
+    max_questions: int = 5
 ) -> WorkerOutput:
-    """Helper para crear un output que necesita más contexto del usuario"""
+    """
+    Helper para crear un output que necesita más contexto del usuario.
+
+    Args:
+        worker: Nombre del worker
+        questions: Lista de strings o ClarificationQuestion (como dicts)
+        partial_content: Contenido parcial mientras se espera
+        wizard_mode: Si True, muestra preguntas una por una
+        max_questions: Máximo de preguntas a mostrar
+
+    Returns:
+        WorkerOutput con status="needs_context"
+    """
+    # Convertir ClarificationQuestion objects a dicts si es necesario
+    serialized_questions = []
+    for q in questions:
+        if hasattr(q, "model_dump"):
+            serialized_questions.append(q.model_dump())
+        elif isinstance(q, dict):
+            serialized_questions.append(q)
+        else:
+            serialized_questions.append(str(q))
+
+    wizard_config = None
+    if wizard_mode or (serialized_questions and isinstance(serialized_questions[0], dict)):
+        wizard_config = {
+            "wizard_mode": wizard_mode,
+            "max_questions": max_questions,
+            "allow_back": True,
+            "allow_skip": True,
+            "show_progress": True
+        }
+
     return WorkerOutput(
         worker=worker,
         status="needs_context",
         summary="Se necesita más información del usuario",
         content=partial_content,
-        clarification_questions=questions,
+        clarification_questions=serialized_questions,
+        wizard_config=wizard_config,
         confidence=0.3
+    )
+
+
+def create_wizard_context_output(
+    worker: str,
+    question_set_data: Dict[str, Any],
+    partial_content: str = ""
+) -> WorkerOutput:
+    """
+    Helper para crear un output con un wizard completo.
+
+    Args:
+        worker: Nombre del worker
+        question_set_data: QuestionSet serializado (usar question_set.model_dump())
+        partial_content: Contenido parcial mientras se espera
+
+    Returns:
+        WorkerOutput configurado para wizard interactivo
+    """
+    questions = question_set_data.get("questions", [])
+    wizard_config = {
+        "wizard_mode": question_set_data.get("wizard_mode", True),
+        "max_questions": question_set_data.get("max_questions", 5),
+        "allow_back": question_set_data.get("allow_back", True),
+        "allow_skip": question_set_data.get("allow_skip", True),
+        "show_progress": question_set_data.get("show_progress", True),
+        "title": question_set_data.get("title"),
+        "completion_message": question_set_data.get("completion_message"),
+    }
+
+    return WorkerOutput(
+        worker=worker,
+        status="needs_context",
+        summary="Se necesita más información del usuario (wizard)",
+        content=partial_content,
+        clarification_questions=questions,
+        wizard_config=wizard_config,
+        confidence=0.3,
+        extra={"question_set": question_set_data}
     )
 
 
