@@ -3,3 +3,7 @@
 /env
 
 /.langgraph_api
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
