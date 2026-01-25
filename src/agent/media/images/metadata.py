@@ -320,7 +320,8 @@ class ImageMetadata(BaseModel):
             score += 0.1
 
         # Coincidencia en categoria
-        if query_lower in self.category.value:
+        category_value = self.category.value if hasattr(self.category, 'value') else str(self.category)
+        if query_lower in category_value:
             score += 0.15
 
         return min(score, 1.0)

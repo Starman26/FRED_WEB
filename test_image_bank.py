@@ -23,7 +23,7 @@ def test_metadata():
     print("TEST 1: Image Metadata Schema")
     print("="*60)
 
-    from src.agent.services.images.metadata import (
+    from src.agent.media.images.metadata import (
         ImageMetadata,
         ImageLicense,
         LicenseType,
@@ -80,7 +80,7 @@ def test_cache():
     print("TEST 2: Image Cache")
     print("="*60)
 
-    from src.agent.services.images.cache import ImageCache, CacheConfig
+    from src.agent.media.images.cache import ImageCache, CacheConfig
 
     # Crear cache con config de test
     config = CacheConfig(
@@ -127,8 +127,8 @@ def test_bank():
     print("TEST 3: Image Bank (Local Dataset)")
     print("="*60)
 
-    from src.agent.services.images.bank import ImageBank, get_image_bank
-    from src.agent.services.images.metadata import ImageCategory
+    from src.agent.media.images.bank import ImageBank, get_image_bank
+    from src.agent.media.images.metadata import ImageCategory
 
     bank = get_image_bank(".test_assets/images")
     print(f"[OK] Bank initialized")
@@ -162,8 +162,8 @@ def test_sourcer():
     print("TEST 4: Image Sourcer")
     print("="*60)
 
-    from src.agent.services.images.sourcer import ImageSourcer, get_image_sourcer
-    from src.agent.services.images.metadata import ImageRequest, ImageCategory
+    from src.agent.media.images.sourcer import ImageSourcer, get_image_sourcer
+    from src.agent.media.images.metadata import ImageRequest, ImageCategory
 
     sourcer = get_image_sourcer()
     print(f"[OK] Sourcer initialized")
@@ -189,7 +189,7 @@ def test_sourcer():
 
     # Test Wikimedia (no API key needed)
     if "wikimedia" in sourcer.get_available_sources():
-        from src.agent.services.images.sourcer import WikimediaProvider
+        from src.agent.media.images.sourcer import WikimediaProvider
         wiki = WikimediaProvider()
         result = wiki.search("PLC Siemens", per_page=3)
         print(f"\n[OK] Wikimedia search 'PLC Siemens':")
@@ -205,7 +205,7 @@ def test_full_workflow():
     print("TEST 5: Full Workflow")
     print("="*60)
 
-    from src.agent.services.images import (
+    from src.agent.media.images import (
         ImageSourcer,
         ImageBank,
         ImageCache,
@@ -215,7 +215,7 @@ def test_full_workflow():
         get_image_sourcer,
         get_image_bank,
     )
-    from src.agent.services.images.metadata import ImageRequest
+    from src.agent.media.images.metadata import ImageRequest
 
     # 1. Get sourcer
     sourcer = get_image_sourcer()

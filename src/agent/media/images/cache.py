@@ -34,7 +34,7 @@ except ImportError:
 
 import requests
 
-from src.agent.services.images.metadata import ImageMetadata, ImageSource
+from src.agent.media.images.metadata import ImageMetadata, ImageSource
 
 
 logger = logging.getLogger(__name__)

@@ -2,9 +2,11 @@
 tutor_node.py - Worker especializado en tutorías y explicaciones educativas
 
 Usa WorkerOutput contract, NO retorna done=True, usa pending_context para evidencia.
+Incluye soporte para imágenes educativas del banco de imágenes.
 """
 import os
-from typing import Dict, Any, List
+import re
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -23,6 +25,46 @@ from src.agent.prompts.tutor_prompt import (
     READING_TUTOR,
     MIX_TUTOR
 )
+
+# Image bank integration
+try:
+    from src.agent.media.images import get_image_sourcer, ImageCategory
+    from src.agent.media.images.metadata import ImageRequest
+    IMAGES_AVAILABLE = True
+except ImportError:
+    IMAGES_AVAILABLE = False
+
+
+# Keywords for image category detection
+IMAGE_CATEGORY_KEYWORDS = {
+    ImageCategory.PLC_SIEMENS if IMAGES_AVAILABLE else "plc-siemens": [
+        "siemens", "s7-1200", "s7-1500", "s7-300", "s7-400", "tia portal", "step 7"
+    ],
+    ImageCategory.PLC_ALLEN_BRADLEY if IMAGES_AVAILABLE else "plc-allen-bradley": [
+        "allen bradley", "rockwell", "controllogix", "compactlogix", "micrologix", "rslogix"
+    ],
+    ImageCategory.COBOT_UR if IMAGES_AVAILABLE else "cobot-ur": [
+        "universal robots", "ur5", "ur10", "ur3", "ur5e", "ur10e", "ur3e", "polyscope"
+    ],
+    ImageCategory.COBOT_FANUC if IMAGES_AVAILABLE else "cobot-fanuc": [
+        "fanuc", "crx", "fanuc robot"
+    ],
+    ImageCategory.COBOT_GENERAL if IMAGES_AVAILABLE else "cobot-general": [
+        "cobot", "robot colaborativo", "collaborative robot", "brazo robotico"
+    ],
+    ImageCategory.LADDER_LOGIC if IMAGES_AVAILABLE else "ladder-logic": [
+        "ladder", "escalera", "ladder logic", "diagrama ladder", "contactos", "bobinas"
+    ],
+    ImageCategory.HMI_SCREEN if IMAGES_AVAILABLE else "hmi-screen": [
+        "hmi", "pantalla", "scada", "interfaz", "panel operador"
+    ],
+    ImageCategory.PROFINET if IMAGES_AVAILABLE else "profinet": [
+        "profinet", "profibus", "ethernet industrial", "red industrial"
+    ],
+    ImageCategory.SAFETY_EQUIPMENT if IMAGES_AVAILABLE else "safety-equipment": [
+        "seguridad", "safety", "e-stop", "paro emergencia", "cortina luz", "light curtain"
+    ],
+}
 
 
 TUTOR_MULTISTEP_PROMPT = """Eres un **Tutor Técnico Especializado** experto en:
@@ -49,6 +91,139 @@ Nombre del usuario: {user_name}
 Perfil de aprendizaje: {learning_style}
 
 """
+
+
+def detect_image_category(text: str) -> Optional[Any]:
+    """
+    Detecta la categoría de imagen más relevante basada en el texto.
+
+    Args:
+        text: Texto del usuario o contexto
+
+    Returns:
+        ImageCategory más relevante o None
+    """
+    if not IMAGES_AVAILABLE:
+        return None
+
+    text_lower = text.lower()
+
+    for category, keywords in IMAGE_CATEGORY_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in text_lower:
+                return category
+
+    return None
+
+
+def extract_image_search_terms(user_message: str, evidence_text: str = "") -> str:
+    """
+    Extrae términos de búsqueda relevantes para imágenes.
+
+    Args:
+        user_message: Mensaje del usuario
+        evidence_text: Texto de evidencia previa
+
+    Returns:
+        Query de búsqueda para imágenes
+    """
+    # Palabras clave técnicas relevantes
+    technical_keywords = [
+        "plc", "siemens", "allen bradley", "rockwell", "cobot", "robot",
+        "ladder", "hmi", "scada", "profinet", "profibus", "sensor",
+        "actuador", "variador", "motor", "encoder", "io", "modbus",
+        "ethernet", "tia portal", "step 7", "ur5", "ur10", "fanuc",
+        "seguridad", "safety", "diagrama", "conexion", "cableado"
+    ]
+
+    combined_text = f"{user_message} {evidence_text}".lower()
+    found_keywords = []
+
+    for keyword in technical_keywords:
+        if keyword in combined_text:
+            found_keywords.append(keyword)
+
+    # Usar los primeros 3-4 keywords más relevantes
+    if found_keywords:
+        return " ".join(found_keywords[:4])
+
+    # Fallback: usar las primeras palabras significativas del mensaje
+    words = re.findall(r'\b\w{4,}\b', user_message.lower())
+    return " ".join(words[:3]) if words else "industrial automation"
+
+
+def search_relevant_images(
+    user_message: str,
+    evidence_text: str = "",
+    learning_style: str = "",
+    max_images: int = 3
+) -> List[Dict[str, Any]]:
+    """
+    Busca imágenes relevantes para la explicación educativa.
+
+    Args:
+        user_message: Mensaje del usuario
+        evidence_text: Texto de evidencia
+        learning_style: Estilo de aprendizaje del usuario
+        max_images: Número máximo de imágenes a retornar
+
+    Returns:
+        Lista de diccionarios con metadatos de imagen
+    """
+    if not IMAGES_AVAILABLE:
+        return []
+
+    # Los estudiantes visuales obtienen más imágenes
+    if "visual" in learning_style.lower():
+        max_images = min(max_images + 2, 5)
+
+    try:
+        sourcer = get_image_sourcer()
+
+        # Detectar categoría
+        category = detect_image_category(user_message)
+
+        # Extraer términos de búsqueda
+        search_query = extract_image_search_terms(user_message, evidence_text)
+
+        # Crear solicitud de imagen
+        request = ImageRequest(
+            query=search_query,
+            category=category,
+            max_results=max_images,
+            require_commercial_license=False  # Para uso educativo
+        )
+
+        # Buscar (primero local, luego online)
+        result = sourcer.search(request, include_online=True)
+
+        # Convertir a diccionarios serializables
+        images = []
+        for img in result.images:
+            images.append({
+                "id": img.id,
+                "title": img.title,
+                "source": img.source.value if hasattr(img.source, 'value') else str(img.source),
+                "source_url": img.source_url,
+                "source_page": img.source_page,
+                "author": img.author,
+                "license": {
+                    "name": img.license.name,
+                    "requires_attribution": img.license.requires_attribution,
+                    "allows_commercial": img.license.allows_commercial,
+                },
+                "category": img.category.value if hasattr(img.category, 'value') else str(img.category) if img.category else None,
+                "alt_text": img.alt_text or img.title,
+                "width": img.width,
+                "height": img.height,
+            })
+
+        logger.info("tutor", f"Found {len(images)} relevant images for query: {search_query}")
+        return images
+
+    except Exception as e:
+        logger.warning("tutor", f"Error searching images: {e}")
+        return []
 
 
 def get_learning_style_prompt(learning_style_dict: Dict[str, Any]) -> str:
@@ -129,30 +304,40 @@ def get_prior_summaries(state: AgentState) -> str:
 
 
 def tutor_node(state: AgentState) -> Dict[str, Any]:
-    """Worker tutor que genera contenido educativo."""
+    """Worker tutor que genera contenido educativo con imágenes relevantes."""
     start_time = datetime.utcnow()
     logger.node_start("tutor_node", {"has_pending_context": bool(state.get("pending_context"))})
     events = [event_execute("tutor", "Preparando explicación educativa...")]
-    
+
     user_message = get_last_user_message(state)
     if not user_message:
         error_output = create_error_output("tutor", "NO_MESSAGE", "No hay mensaje del usuario")
         return {"worker_outputs": [error_output.model_dump()], "tutor_result": error_output.model_dump_json(), "events": events}
-    
+
     evidence_text, evidence_items = get_evidence_from_context(state)
     context_text = get_prior_summaries(state)
     has_evidence = len(evidence_items) > 0
-    
+
+    # Formatear el learning_style del usuario
+    learning_style_raw = state.get("learning_style", {})
+    learning_style_text = format_learning_style(learning_style_raw)
+
+    # Buscar imágenes relevantes para la explicación
+    relevant_images = search_relevant_images(
+        user_message=user_message,
+        evidence_text=evidence_text,
+        learning_style=learning_style_text,
+        max_images=3
+    )
+    if relevant_images:
+        events.append(event_report("tutor", f"Encontradas {len(relevant_images)} imágenes relevantes"))
+
     model_name = os.getenv("DEFAULT_MODEL", "claude-sonnet-4-20250514")
     try:
         llm = ChatAnthropic(model=model_name, temperature=0.7) if "claude" in model_name.lower() else ChatOpenAI(model=model_name, temperature=0.7)
     except Exception as e:
         error_output = create_error_output("tutor", "LLM_INIT_ERROR", f"Error inicializando modelo: {str(e)}")
         return {"worker_outputs": [error_output.model_dump()], "tutor_result": error_output.model_dump_json(), "events": events}
-    
-    # Formatear el learning_style del usuario
-    learning_style_raw = state.get("learning_style", {})
-    learning_style_text = format_learning_style(learning_style_raw)
 
     # Seleccionar el prompt de estilo de aprendizaje apropiado
     learning_style_guidance = get_learning_style_prompt(learning_style_raw)
@@ -164,12 +349,12 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
         user_name=state.get("user_name", "Usuario"),
         learning_style=learning_style_text
     )
-    
+
     messages = [SystemMessage(content=prompt)]
     if rolling_summary := state.get("rolling_summary", ""):
         messages.append(SystemMessage(content=f"Contexto de la conversación:\n{rolling_summary}"))
     messages.append(HumanMessage(content=user_message))
-    
+
     try:
         response = llm.invoke(messages)
         result_text = (response.content or "").strip()
@@ -177,20 +362,27 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
     except Exception as e:
         error_output = create_error_output("tutor", "LLM_ERROR", f"Error generando respuesta: {str(e)}")
         return {"worker_outputs": [error_output.model_dump()], "tutor_result": error_output.model_dump_json(), "events": events}
-    
+
+    # Construir output con imágenes en extra
     output = WorkerOutputBuilder.tutor(
         content=result_text,
         learning_objectives=["Comprender el concepto", "Aplicar en práctica"],
         summary=f"Explicación educativa generada ({len(result_text)} chars)",
         confidence=0.85 if has_evidence else 0.75,
     )
+
+    # Agregar imágenes al extra
+    if relevant_images:
+        output.extra["images"] = relevant_images
+        output.extra["images_count"] = len(relevant_images)
+
     if evidence_items:
         output.evidence = evidence_items
     output.metadata.completed_at = datetime.utcnow().isoformat()
     output.metadata.processing_time_ms = processing_time
     output.metadata.model_used = model_name
-    
-    logger.node_end("tutor_node", {"content_length": len(result_text)})
-    events.append(event_report("tutor", "✅ Explicación lista"))
-    
+
+    logger.node_end("tutor_node", {"content_length": len(result_text), "images_found": len(relevant_images)})
+    events.append(event_report("tutor", "Explicación lista"))
+
     return {"worker_outputs": [output.model_dump()], "tutor_result": output.model_dump_json(), "events": events}

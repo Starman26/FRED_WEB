@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
-from src.agent.services.images.metadata import (
+from src.agent.media.images.metadata import (
     ImageMetadata,
     ImageSource,
     ImageCategory,
@@ -398,7 +398,7 @@ class ImageBank:
         Returns:
             Dict con cantidad de imagenes agregadas por categoria
         """
-        from src.agent.services.images.metadata import ImageRequest
+        from src.agent.media.images.metadata import ImageRequest
 
         categories = categories or list(ImageCategory)
         results = {}

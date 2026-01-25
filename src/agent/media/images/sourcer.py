@@ -22,7 +22,7 @@ from abc import ABC, abstractmethod
 
 import requests
 
-from src.agent.services.images.metadata import (
+from src.agent.media.images.metadata import (
     ImageMetadata,
     ImageSource,
     ImageCategory,
@@ -31,7 +31,7 @@ from src.agent.services.images.metadata import (
     ImageSearchResult,
     ImageRequest,
 )
-from src.agent.services.images.cache import ImageCache, get_image_cache
+from src.agent.media.images.cache import ImageCache, get_image_cache
 
 
 logger = logging.getLogger(__name__)
@@ -302,7 +302,7 @@ class WikimediaProvider(ImageProvider):
     def search(self, query: str, page: int = 1, per_page: int = 10) -> ImageSearchResult:
         start = time.time()
         try:
-            # Buscar archivos
+            # Buscar archivos (Wikimedia requires User-Agent header)
             response = requests.get(
                 self.BASE_URL,
                 params={
@@ -315,6 +315,9 @@ class WikimediaProvider(ImageProvider):
                     "gsroffset": (page - 1) * per_page,
                     "prop": "imageinfo",
                     "iiprop": "url|size|mime|extmetadata",
+                },
+                headers={
+                    "User-Agent": "FrEDie-ImageBank/1.0 (Educational Tutor; contact@fredie.edu)"
                 },
                 timeout=15
             )
@@ -439,7 +442,7 @@ class ImageSourcer:
     def local_bank(self):
         """Obtiene el banco local de imagenes"""
         if self._local_bank is None:
-            from src.agent.services.images.bank import get_image_bank
+            from src.agent.media.images.bank import get_image_bank
             self._local_bank = get_image_bank()
         return self._local_bank
 

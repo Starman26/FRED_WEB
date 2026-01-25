@@ -9,16 +9,16 @@ Componentes:
 - ImageBank: Registro de imagenes locales del dataset
 """
 
-from src.agent.services.images.metadata import (
+from src.agent.media.images.metadata import (
     ImageMetadata,
     ImageLicense,
     ImageSource,
     ImageCategory,
     LicenseType,
 )
-from src.agent.services.images.cache import ImageCache
-from src.agent.services.images.sourcer import ImageSourcer, get_image_sourcer
-from src.agent.services.images.bank import ImageBank, get_image_bank
+from src.agent.media.images.cache import ImageCache
+from src.agent.media.images.sourcer import ImageSourcer, get_image_sourcer
+from src.agent.media.images.bank import ImageBank, get_image_bank
 
 __all__ = [
     "ImageMetadata",
