@@ -955,7 +955,7 @@ def format_lab_overview_for_display(overview: Dict) -> str:
     if not overview.get("success"):
         return f"❌ Error al obtener estado del laboratorio: {overview.get('error')}"
     
-    lines = ["## 🏭 Estado del Laboratorio ATLAS\n"]
+    lines = ["##  Estado del Laboratorio FRED\n"]
     
     # Resumen general
     lines.append(f"**Estaciones activas:** {overview['stations_online']}/{overview['total_stations']}")

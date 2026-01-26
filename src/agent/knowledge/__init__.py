@@ -1,0 +1,36 @@
+"""Conocimiento base del laboratorio"""
+from .lab_knowledge import (
+    LAB_NAME,
+    LAB_DESCRIPTION,
+    LAB_PURPOSE,
+    ROBOTS,
+    STATIONS,
+    EQUIPMENT_INFO,
+    TERMINOLOGY,
+    IMPORTANT_DOCUMENTS,
+    SAFETY_PROCEDURES,
+    COMMON_ERRORS,
+    get_lab_knowledge_summary,
+    get_robot_info,
+    get_station_info,
+    get_terminology_definition,
+    get_error_solution,
+)
+
+__all__ = [
+    "LAB_NAME",
+    "LAB_DESCRIPTION", 
+    "LAB_PURPOSE",
+    "ROBOTS",
+    "STATIONS",
+    "EQUIPMENT_INFO",
+    "TERMINOLOGY",
+    "IMPORTANT_DOCUMENTS",
+    "SAFETY_PROCEDURES",
+    "COMMON_ERRORS",
+    "get_lab_knowledge_summary",
+    "get_robot_info",
+    "get_station_info",
+    "get_terminology_definition",
+    "get_error_solution",
+]

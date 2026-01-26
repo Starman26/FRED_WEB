@@ -17,7 +17,16 @@ from src.agent.state import AgentState
 from src.agent.contracts.worker_contract import WorkerOutputBuilder, EvidenceItem, create_error_output
 from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report, event_error
-from src.agent.utils.format_helpers import format_learning_style
+
+# Import format_helpers with fallback
+try:
+    from src.agent.utils.format_helpers import format_learning_style
+except ImportError:
+    def format_learning_style(style: Dict) -> str:
+        if not style or not isinstance(style, dict):
+            return "mixed"
+        return f"Type: {style.get('type', 'mixed')}, Pace: {style.get('pace', 'medium')}, Depth: {style.get('depth', 'intermediate')}"
+
 from src.agent.prompts.tutor_prompt import (
     VISUAL_TUTOR,
     AUDITIVE_TUTOR,
@@ -67,41 +76,78 @@ IMAGE_CATEGORY_KEYWORDS = {
 }
 
 
-TUTOR_MULTISTEP_PROMPT = """Eres un **Tutor Técnico Especializado** experto en:
-- PLCs (Controladores Lógicos Programables)
-- Cobots (Robots Colaborativos)
-- Python y AI/ML (LangGraph, LangChain)
+TUTOR_MULTISTEP_PROMPT = """You are SENTINEL's Technical Education Module specializing in:
+- PLCs (Programmable Logic Controllers)
+- Cobots (Collaborative Robots)  
+- Python and AI/ML (LangGraph, LangChain)
 
-## CONTEXTO IMPORTANTE
+LANGUAGE: ALWAYS respond in the same language the user writes in.
+
+## IMPORTANT CONTEXT
 {context_section}
 
-## EVIDENCIA DE INVESTIGACIÓN PREVIA
+## PRIOR RESEARCH EVIDENCE
 {evidence_section}
 
-## INSTRUCCIONES
-1. **Usa la evidencia proporcionada**: Si hay evidencia, úsala y cítala [Título, Pág. X-Y]
-2. **Estructura clara**: Usa encabezados y listas cuando ayuden
-3. **Sé didáctico**: Explica paso a paso, con ejemplos
-4. **Responde en español**
-5. **Dependiendo de la forma de aprendizaje del usuario usa diferentes tonos**
+## INSTRUCTIONS
+1. Use provided evidence: If evidence exists, use and cite it [Title, Page X-Y]
+2. Clear structure: Use headers and lists when helpful
+3. Be didactic: Explain step by step with examples
+4. Adapt to the user's learning style as specified below
+5. Maintain professional tone - no emojis
 
 {learning_style_guidance}
 
-Nombre del usuario: {user_name}
-Perfil de aprendizaje: {learning_style}
+User name: {user_name}
+Learning profile: {learning_style}
 
+Always end your response with exactly 3 follow-up suggestions:
+---SUGGESTIONS---
+1. [First related topic or deeper exploration]
+2. [Second suggestion for practice or application]
+3. [Third suggestion for expanding knowledge]
+---END_SUGGESTIONS---
 """
+
+
+def extract_suggestions_from_text(text: str) -> tuple[str, list[str]]:
+    """
+    Extracts follow-up suggestions from the LLM response text.
+    
+    Args:
+        text: Raw LLM response text
+        
+    Returns:
+        Tuple of (content_without_suggestions, list_of_suggestions)
+    """
+    suggestions = []
+    content = text
+    
+    if "---SUGGESTIONS---" in text and "---END_SUGGESTIONS---" in text:
+        parts = text.split("---SUGGESTIONS---")
+        content = parts[0].strip()
+        
+        if len(parts) > 1:
+            suggestions_block = parts[1].split("---END_SUGGESTIONS---")[0]
+            for line in suggestions_block.strip().split("\n"):
+                line = line.strip()
+                if line and (line[0].isdigit() or line.startswith("-")):
+                    clean_line = line.lstrip("0123456789.-) ").strip()
+                    if clean_line:
+                        suggestions.append(clean_line)
+    
+    return content, suggestions[:3]
 
 
 def detect_image_category(text: str) -> Optional[Any]:
     """
-    Detecta la categoría de imagen más relevante basada en el texto.
+    Detects the most relevant image category based on text.
 
     Args:
-        text: Texto del usuario o contexto
+        text: User text or context
 
     Returns:
-        ImageCategory más relevante o None
+        Most relevant ImageCategory or None
     """
     if not IMAGES_AVAILABLE:
         return None
@@ -118,16 +164,15 @@ def detect_image_category(text: str) -> Optional[Any]:
 
 def extract_image_search_terms(user_message: str, evidence_text: str = "") -> str:
     """
-    Extrae términos de búsqueda relevantes para imágenes.
+    Extracts relevant search terms for images.
 
     Args:
-        user_message: Mensaje del usuario
-        evidence_text: Texto de evidencia previa
+        user_message: User message
+        evidence_text: Prior evidence text
 
     Returns:
-        Query de búsqueda para imágenes
+        Search query for images
     """
-    # Palabras clave técnicas relevantes
     technical_keywords = [
         "plc", "siemens", "allen bradley", "rockwell", "cobot", "robot",
         "ladder", "hmi", "scada", "profinet", "profibus", "sensor",
@@ -143,11 +188,9 @@ def extract_image_search_terms(user_message: str, evidence_text: str = "") -> st
         if keyword in combined_text:
             found_keywords.append(keyword)
 
-    # Usar los primeros 3-4 keywords más relevantes
     if found_keywords:
         return " ".join(found_keywords[:4])
 
-    # Fallback: usar las primeras palabras significativas del mensaje
     words = re.findall(r'\b\w{4,}\b', user_message.lower())
     return " ".join(words[:3]) if words else "industrial automation"
 
@@ -159,45 +202,39 @@ def search_relevant_images(
     max_images: int = 3
 ) -> List[Dict[str, Any]]:
     """
-    Busca imágenes relevantes para la explicación educativa.
+    Searches for relevant images for the educational explanation.
 
     Args:
-        user_message: Mensaje del usuario
-        evidence_text: Texto de evidencia
-        learning_style: Estilo de aprendizaje del usuario
-        max_images: Número máximo de imágenes a retornar
+        user_message: User message
+        evidence_text: Evidence text
+        learning_style: User's learning style
+        max_images: Maximum number of images to return
 
     Returns:
-        Lista de diccionarios con metadatos de imagen
+        List of dictionaries with image metadata
     """
     if not IMAGES_AVAILABLE:
         return []
 
-    # Los estudiantes visuales obtienen más imágenes
+    # Visual learners get more images
     if "visual" in learning_style.lower():
         max_images = min(max_images + 2, 5)
 
     try:
         sourcer = get_image_sourcer()
 
-        # Detectar categoría
         category = detect_image_category(user_message)
-
-        # Extraer términos de búsqueda
         search_query = extract_image_search_terms(user_message, evidence_text)
 
-        # Crear solicitud de imagen
         request = ImageRequest(
             query=search_query,
             category=category,
             max_results=max_images,
-            require_commercial_license=False  # Para uso educativo
+            require_commercial_license=False
         )
 
-        # Buscar (primero local, luego online)
         result = sourcer.search(request, include_online=True)
 
-        # Convertir a diccionarios serializables
         images = []
         for img in result.images:
             images.append({
@@ -228,20 +265,19 @@ def search_relevant_images(
 
 def get_learning_style_prompt(learning_style_dict: Dict[str, Any]) -> str:
     """
-    Selecciona el prompt de estilo de aprendizaje apropiado basado en el tipo.
+    Selects the appropriate learning style prompt based on type.
 
     Args:
-        learning_style_dict: Diccionario con el learning_style del usuario
+        learning_style_dict: Dictionary with user's learning_style
 
     Returns:
-        El prompt específico para ese estilo de aprendizaje
+        Specific prompt for that learning style
     """
     if not learning_style_dict or not isinstance(learning_style_dict, dict):
-        return MIX_TUTOR  # Default: mixto
+        return MIX_TUTOR
 
     learning_type = learning_style_dict.get("type", "").lower()
 
-    # Mapeo de tipos a prompts
     style_map = {
         "visual": VISUAL_TUTOR,
         "auditory": AUDITIVE_TUTOR,
@@ -261,7 +297,7 @@ def get_learning_style_prompt(learning_style_dict: Dict[str, Any]) -> str:
 
 
 def get_last_user_message(state: AgentState) -> str:
-    """Extrae el último mensaje del usuario"""
+    """Extracts the last user message"""
     for m in reversed(state.get("messages", []) or []):
         if isinstance(m, HumanMessage):
             return (m.content or "").strip()
@@ -271,7 +307,7 @@ def get_last_user_message(state: AgentState) -> str:
 
 
 def get_evidence_from_context(state: AgentState) -> tuple[str, List[EvidenceItem]]:
-    """Obtiene evidencia del pending_context"""
+    """Gets evidence from pending_context"""
     pending_context = state.get("pending_context", {})
     evidence_data = pending_context.get("evidence", [])
     
@@ -282,47 +318,52 @@ def get_evidence_from_context(state: AgentState) -> tuple[str, List[EvidenceItem
                 break
     
     if not evidence_data:
-        return "No hay evidencia de investigación previa.", []
+        return "No prior research evidence available.", []
     
     evidence_items = []
     evidence_parts = []
     for ev in evidence_data:
         if isinstance(ev, dict):
             title, page, chunk = ev.get("title", "Doc"), ev.get("page", "?"), ev.get("chunk", "")
-            evidence_parts.append(f"**{title}** (Pág. {page})\n{chunk[:300]}...")
+            evidence_parts.append(f"**{title}** (Page {page})\n{chunk[:300]}...")
             evidence_items.append(EvidenceItem(title=title, page=page, chunk=chunk, score=ev.get("score", 0)))
     
-    return "\n\n".join(evidence_parts) if evidence_parts else "No hay evidencia.", evidence_items
+    return "\n\n".join(evidence_parts) if evidence_parts else "No evidence available.", evidence_items
 
 
 def get_prior_summaries(state: AgentState) -> str:
-    """Obtiene resúmenes de workers anteriores"""
+    """Gets summaries from previous workers"""
     prior_summaries = state.get("pending_context", {}).get("prior_summaries", [])
     if not prior_summaries:
-        return "Sin contexto previo."
-    return "\n".join([f"- **{ps.get('worker')}**: {ps.get('summary')}" for ps in prior_summaries if ps.get('summary')]) or "Sin contexto previo."
+        return "No prior context."
+    return "\n".join([f"- **{ps.get('worker')}**: {ps.get('summary')}" for ps in prior_summaries if ps.get('summary')]) or "No prior context."
 
 
 def tutor_node(state: AgentState) -> Dict[str, Any]:
-    """Worker tutor que genera contenido educativo con imágenes relevantes."""
+    """Worker tutor that generates educational content with relevant images."""
     start_time = datetime.utcnow()
     logger.node_start("tutor_node", {"has_pending_context": bool(state.get("pending_context"))})
-    events = [event_execute("tutor", "Preparando explicación educativa...")]
+    events = [event_execute("tutor", "Preparing educational content...")]
 
     user_message = get_last_user_message(state)
     if not user_message:
-        error_output = create_error_output("tutor", "NO_MESSAGE", "No hay mensaje del usuario")
-        return {"worker_outputs": [error_output.model_dump()], "tutor_result": error_output.model_dump_json(), "events": events}
+        error_output = create_error_output("tutor", "NO_MESSAGE", "No user message found")
+        return {
+            "worker_outputs": [error_output.model_dump()],
+            "tutor_result": error_output.model_dump_json(),
+            "events": events,
+            "follow_up_suggestions": ["Ask a technical question", "Request an explanation", "Inquire about lab equipment"],
+        }
 
     evidence_text, evidence_items = get_evidence_from_context(state)
     context_text = get_prior_summaries(state)
     has_evidence = len(evidence_items) > 0
 
-    # Formatear el learning_style del usuario
+    # Format user's learning_style
     learning_style_raw = state.get("learning_style", {})
     learning_style_text = format_learning_style(learning_style_raw)
 
-    # Buscar imágenes relevantes para la explicación
+    # Search for relevant images
     relevant_images = search_relevant_images(
         user_message=user_message,
         evidence_text=evidence_text,
@@ -330,48 +371,61 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
         max_images=3
     )
     if relevant_images:
-        events.append(event_report("tutor", f"Encontradas {len(relevant_images)} imágenes relevantes"))
+        events.append(event_report("tutor", f"Found {len(relevant_images)} relevant images"))
 
     model_name = os.getenv("DEFAULT_MODEL", "claude-sonnet-4-20250514")
     try:
         llm = ChatAnthropic(model=model_name, temperature=0.7) if "claude" in model_name.lower() else ChatOpenAI(model=model_name, temperature=0.7)
     except Exception as e:
-        error_output = create_error_output("tutor", "LLM_INIT_ERROR", f"Error inicializando modelo: {str(e)}")
-        return {"worker_outputs": [error_output.model_dump()], "tutor_result": error_output.model_dump_json(), "events": events}
+        error_output = create_error_output("tutor", "LLM_INIT_ERROR", f"Error initializing model: {str(e)}")
+        return {
+            "worker_outputs": [error_output.model_dump()],
+            "tutor_result": error_output.model_dump_json(),
+            "events": events,
+            "follow_up_suggestions": ["Try again", "Check system status", "Report the issue"],
+        }
 
-    # Seleccionar el prompt de estilo de aprendizaje apropiado
+    # Select appropriate learning style prompt
     learning_style_guidance = get_learning_style_prompt(learning_style_raw)
 
     prompt = TUTOR_MULTISTEP_PROMPT.format(
-        context_section=context_text if context_text != "Sin contexto previo." else "Primera interacción",
+        context_section=context_text if context_text != "No prior context." else "First interaction",
         evidence_section=evidence_text,
         learning_style_guidance=learning_style_guidance,
-        user_name=state.get("user_name", "Usuario"),
+        user_name=state.get("user_name", "User"),
         learning_style=learning_style_text
     )
 
     messages = [SystemMessage(content=prompt)]
     if rolling_summary := state.get("rolling_summary", ""):
-        messages.append(SystemMessage(content=f"Contexto de la conversación:\n{rolling_summary}"))
+        messages.append(SystemMessage(content=f"Conversation context:\n{rolling_summary}"))
     messages.append(HumanMessage(content=user_message))
 
+    suggestions = []
     try:
         response = llm.invoke(messages)
-        result_text = (response.content or "").strip()
+        raw_result = (response.content or "").strip()
+        # Extract suggestions from result
+        result_text, suggestions = extract_suggestions_from_text(raw_result)
         processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
     except Exception as e:
-        error_output = create_error_output("tutor", "LLM_ERROR", f"Error generando respuesta: {str(e)}")
-        return {"worker_outputs": [error_output.model_dump()], "tutor_result": error_output.model_dump_json(), "events": events}
+        error_output = create_error_output("tutor", "LLM_ERROR", f"Error generating response: {str(e)}")
+        return {
+            "worker_outputs": [error_output.model_dump()],
+            "tutor_result": error_output.model_dump_json(),
+            "events": events,
+            "follow_up_suggestions": ["Try rephrasing your question", "Check connection", "Report issue"],
+        }
 
-    # Construir output con imágenes en extra
+    # Build output with images in extra
     output = WorkerOutputBuilder.tutor(
         content=result_text,
-        learning_objectives=["Comprender el concepto", "Aplicar en práctica"],
-        summary=f"Explicación educativa generada ({len(result_text)} chars)",
+        learning_objectives=["Understand the concept", "Apply in practice"],
+        summary=f"Educational explanation generated ({len(result_text)} chars)",
         confidence=0.85 if has_evidence else 0.75,
     )
 
-    # Agregar imágenes al extra
+    # Add images to extra
     if relevant_images:
         output.extra["images"] = relevant_images
         output.extra["images_count"] = len(relevant_images)
@@ -383,6 +437,19 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
     output.metadata.model_used = model_name
 
     logger.node_end("tutor_node", {"content_length": len(result_text), "images_found": len(relevant_images)})
-    events.append(event_report("tutor", "Explicación lista"))
+    events.append(event_report("tutor", "Explanation ready"))
 
-    return {"worker_outputs": [output.model_dump()], "tutor_result": output.model_dump_json(), "events": events}
+    # Default suggestions if none extracted
+    if not suggestions:
+        suggestions = [
+            "Explore related concepts in depth",
+            "Request practical examples",
+            "Ask about advanced applications"
+        ]
+
+    return {
+        "worker_outputs": [output.model_dump()],
+        "tutor_result": output.model_dump_json(),
+        "events": events,
+        "follow_up_suggestions": suggestions,
+    }
