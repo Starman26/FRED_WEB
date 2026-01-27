@@ -631,6 +631,30 @@ def extract_suggestions_from_events(events: List[Dict]) -> List[str]:
     return suggestions[:3]  # Máximo 3 sugerencias
 
 
+def extract_images_from_events(events: List[Dict]) -> List[Dict[str, Any]]:
+    """Extrae las imágenes relevantes de los eventos del grafo"""
+    images = []
+    node_names = ["tutor", "troubleshooting", "research"]
+    
+    for event in events:
+        if isinstance(event, dict):
+            for node_name in node_names:
+                if node_name in event:
+                    node_data = event[node_name]
+                    if isinstance(node_data, dict):
+                        # Buscar imágenes en worker_outputs
+                        worker_outputs = node_data.get("worker_outputs", [])
+                        for output in worker_outputs:
+                            if isinstance(output, dict):
+                                extra = output.get("extra", {})
+                                if isinstance(extra, dict):
+                                    output_images = extra.get("images", [])
+                                    if output_images:
+                                        images.extend(output_images)
+    
+    return images
+
+
 def extract_questions_from_event(event: Dict) -> List[Dict]:
     """Extrae preguntas estructuradas del evento"""
     if not isinstance(event, dict):
@@ -644,6 +668,60 @@ def extract_questions_from_event(event: Dict) -> List[Dict]:
                 if questions:
                     return questions
     return []
+
+
+def render_images(images: List[Dict[str, Any]]):
+    """Renderiza las imágenes relevantes en el chat"""
+    if not images:
+        return
+    
+    st.markdown(
+        '<div style="margin: 16px 0; color: #9a9a9a; font-size: 14px; font-weight: 500;">📸 Relevant Images</div>',
+        unsafe_allow_html=True
+    )
+    
+    # Show up to 3 images in columns
+    num_images = min(len(images), 3)
+    cols = st.columns(num_images)
+    
+    for idx, img in enumerate(images[:num_images]):
+        with cols[idx]:
+            img_id = img.get("id", "")
+            title = img.get("title", "Technical Image")
+            category = img.get("category", "general")
+            source = img.get("source", "local")
+            source_url = img.get("source_url", "")
+            alt_text = img.get("alt_text", title)
+            
+            # Construct image path
+            # Images are stored in assets/images/<category>/<filename>
+            # The img_id should contain the filename
+            image_path = f"assets/images/{category}/{img_id}"
+            
+            # Try to display the image
+            try:
+                if os.path.exists(image_path):
+                    st.image(image_path, caption=title, use_container_width=True)
+                else:
+                    # If image doesn't exist locally but has source_url, show link
+                    if source_url:
+                        st.markdown(
+                            f'<div style="background: #2a2a2a; padding: 12px; border-radius: 8px; text-align: center;">' 
+                            f'<a href="{source_url}" target="_blank" style="color: #7a7a7a; text-decoration: none;">'
+                            f'🖼️ {title}</a></div>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.caption(f"⚠️ Image not found: {img_id}")
+            except Exception as e:
+                logger.warning(f"Error displaying image {img_id}: {e}")
+                st.caption(f"⚠️ Could not load image")
+            
+            # Add attribution if needed
+            license_info = img.get("license", {})
+            if isinstance(license_info, dict) and license_info.get("requires_attribution"):
+                author = img.get("author", "Unknown")
+                st.caption(f"📷 {author}")
 
 
 def render_suggestions(suggestions: List[str]):
@@ -933,6 +1011,10 @@ def main():
             elif msg_type == "announcement":
                 with st.chat_message("assistant"):
                     st.info(content)
+            elif msg_type == "images":
+                # Render images
+                if isinstance(content, list):
+                    render_images(content)
             elif role == "user":
                 st.markdown(f"""
                 <div style="display: flex; justify-content: flex-end; margin: 12px 0;">
@@ -1025,6 +1107,9 @@ def main():
                     ]
                 st.session_state.follow_up_suggestions = suggestions
                 
+                # Extraer imágenes
+                images = extract_images_from_events(all_graph_events)
+                
                 messages, _ = extract_messages_from_events(all_graph_events)
                 for msg in messages:
                     if msg:
@@ -1035,6 +1120,14 @@ def main():
                                 "content": cleaned_msg,
                                 "type": "text",
                             })
+                
+                # Agregar imágenes como mensaje separado
+                if images:
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": images,
+                        "type": "images",
+                    })
                 
                 st.session_state.pending_questions = []
                 st.session_state.pending_content = ""
@@ -1197,6 +1290,9 @@ def main():
                 suggestions = extract_suggestions_from_events(all_graph_events)
                 st.session_state.follow_up_suggestions = suggestions
                 
+                # Extraer imágenes
+                images = extract_images_from_events(all_graph_events)
+
                 messages, final_state = extract_messages_from_events(all_graph_events)
                 for msg in messages:
                     if msg:
@@ -1208,9 +1304,13 @@ def main():
                                 "type": "text",
                             })
                 
-                if final_state:
-                    st.session_state.window_count = final_state.get("window_count", st.session_state.window_count)
-                    st.session_state.rolling_summary = final_state.get("rolling_summary", st.session_state.rolling_summary)
+                # Agregar imágenes como mensaje separado
+                if images:
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": images,
+                        "type": "images",
+                    })
             
             st.session_state.is_loading = False
             logger.info("Procesamiento completado")
