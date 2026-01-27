@@ -700,19 +700,24 @@ def render_images(images: List[Dict[str, Any]]):
             
             # Try to display the image
             try:
+                # First try local file
                 if os.path.exists(image_path):
-                    st.image(image_path, caption=title, use_container_width=True)
-                else:
-                    # If image doesn't exist locally but has source_url, show link
-                    if source_url:
+                    st.image(image_path, caption=title, width="stretch")
+                # If not local but has source_url, display image directly from URL
+                elif source_url:
+                    try:
+                        st.image(source_url, caption=title, width="stretch")
+                    except Exception as url_error:
+                        # If URL image fails, show clickable link as fallback
+                        logger.warning(f"Could not load image from URL {source_url}: {url_error}")
                         st.markdown(
-                            f'<div style="background: #2a2a2a; padding: 12px; border-radius: 8px; text-align: center;">' 
+                            f'<div style="background: #2a2a2a; padding: 12px; border-radius: 8px; text-align: center;">'
                             f'<a href="{source_url}" target="_blank" style="color: #7a7a7a; text-decoration: none;">'
-                            f'🖼️ {title}</a></div>',
+                            f'🖼️ View: {title}</a></div>',
                             unsafe_allow_html=True
                         )
-                    else:
-                        st.caption(f"⚠️ Image not found: {img_id}")
+                else:
+                    st.caption(f"⚠️ Image not found: {img_id}")
             except Exception as e:
                 logger.warning(f"Error displaying image {img_id}: {e}")
                 st.caption(f"⚠️ Could not load image")

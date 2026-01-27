@@ -8,6 +8,7 @@ Estrategia de sourcing:
 4. Cachear resultados para futuras consultas
 
 Fuentes online soportadas:
+- Google Custom Search (API gratuita - 100 searches/day)
 - Unsplash (API gratuita)
 - Pexels (API gratuita)
 - Pixabay (API gratuita)
@@ -389,6 +390,96 @@ class WikimediaProvider(ImageProvider):
         return LicenseType.UNKNOWN
 
 
+class GoogleCustomSearchProvider(ImageProvider):
+    """Proveedor de Google Custom Search API (mejor para imagenes tecnicas)"""
+
+    BASE_URL = "https://www.googleapis.com/customsearch/v1"
+
+    def __init__(self, api_key: Optional[str] = None, search_engine_id: Optional[str] = None):
+        self.api_key = api_key or os.getenv("GOOGLE_CSE_API_KEY")
+        self.search_engine_id = search_engine_id or os.getenv("GOOGLE_CSE_ID")
+
+    @property
+    def source(self) -> ImageSource:
+        return ImageSource.GOOGLE
+
+    @property
+    def requires_api_key(self) -> bool:
+        return True
+
+    def search(self, query: str, page: int = 1, per_page: int = 10) -> ImageSearchResult:
+        if not self.api_key or not self.search_engine_id:
+            logger.warning("Google Custom Search requires API key and Search Engine ID")
+            return ImageSearchResult(query=query, source=self.source)
+
+        start = time.time()
+        try:
+            # Google CSE uses 1-based indexing and returns max 10 results per query
+            start_index = ((page - 1) * per_page) + 1
+
+            response = requests.get(
+                self.BASE_URL,
+                params={
+                    "key": self.api_key,
+                    "cx": self.search_engine_id,
+                    "q": query,
+                    "searchType": "image",
+                    "num": min(per_page, 10),  # Max 10 per request
+                    "start": start_index,
+                    "imgSize": "large",
+                    "safe": "active",
+                },
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            images = []
+            for item in data.get("items", []):
+                # Extract image metadata
+                image_data = item.get("image", {})
+                link = item.get("link", "")
+
+                # Try to determine license (Google doesn't provide this directly)
+                # Default to requiring attribution for safety
+                license_type = LicenseType.ATTRIBUTION_REQUIRED
+
+                images.append(ImageMetadata(
+                    id=f"google_{abs(hash(link))}",
+                    title=item.get("title", "")[:200],
+                    source=ImageSource.GOOGLE,
+                    source_url=link,
+                    source_page=image_data.get("contextLink", ""),
+                    author=None,
+                    license=ImageLicense(
+                        type=license_type,
+                        name="Usage Rights Required",
+                        requires_attribution=True,
+                        allows_commercial=False,  # Conservative default
+                        allows_modification=False,
+                    ),
+                    width=image_data.get("width"),
+                    height=image_data.get("height"),
+                    alt_text=item.get("snippet", ""),
+                ))
+
+            total_results = int(data.get("searchInformation", {}).get("totalResults", 0))
+
+            return ImageSearchResult(
+                images=images,
+                total=min(total_results, 100),  # Google CSE limits to 100 total
+                query=query,
+                source=self.source,
+                search_time_ms=(time.time() - start) * 1000,
+                has_more=start_index + len(images) < min(total_results, 100),
+                next_page=page + 1 if len(images) == per_page else None
+            )
+
+        except Exception as e:
+            logger.error(f"Google Custom Search error: {e}")
+            return ImageSearchResult(query=query, source=self.source)
+
+
 # ============================================
 # SERVICIO PRINCIPAL DE SOURCING
 # ============================================
@@ -407,6 +498,7 @@ class ImageSourcer:
     def __init__(
         self,
         cache: Optional[ImageCache] = None,
+        enable_google: bool = True,
         enable_unsplash: bool = True,
         enable_pexels: bool = True,
         enable_pixabay: bool = True,
@@ -414,8 +506,18 @@ class ImageSourcer:
     ):
         self.cache = cache or get_image_cache()
 
-        # Inicializar proveedores
+        # Inicializar proveedores (orden determina prioridad)
         self.providers: Dict[ImageSource, ImageProvider] = {}
+
+        # Google Custom Search - PRIORIDAD MAXIMA para imagenes tecnicas
+        if enable_google:
+            provider = GoogleCustomSearchProvider()
+            if provider.is_available():
+                self.providers[ImageSource.GOOGLE] = provider
+                logger.info("Google Custom Search enabled (best for technical images)")
+
+        if enable_wikimedia:
+            self.providers[ImageSource.WIKIMEDIA] = WikimediaProvider()
 
         if enable_unsplash:
             provider = UnsplashProvider()
@@ -431,9 +533,6 @@ class ImageSourcer:
             provider = PixabayProvider()
             if provider.is_available():
                 self.providers[ImageSource.PIXABAY] = provider
-
-        if enable_wikimedia:
-            self.providers[ImageSource.WIKIMEDIA] = WikimediaProvider()
 
         # Referencia al banco local (se inicializa lazy)
         self._local_bank = None
@@ -526,12 +625,14 @@ class ImageSourcer:
                 s for s in self.providers.keys() if s != preferred_source
             ]
         else:
-            # Orden por defecto: Unsplash > Pexels > Pixabay > Wikimedia
+            # Orden por defecto: Google > Wikimedia > Unsplash > Pexels > Pixabay
+            # Google Custom Search is prioritized for technical/industrial images
             provider_order = [
+                ImageSource.GOOGLE,
+                ImageSource.WIKIMEDIA,
                 ImageSource.UNSPLASH,
                 ImageSource.PEXELS,
                 ImageSource.PIXABAY,
-                ImageSource.WIKIMEDIA,
             ]
 
         for source in provider_order:
