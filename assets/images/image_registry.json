@@ -1,538 +1,162 @@
 {
   "version": "1.0",
-  "updated_at": "2026-01-27T21:41:39.339457",
-  "total_images": 11,
+  "updated_at": "2026-01-27T12:00:00.000000",
+  "total_images": 3,
   "images": [
     {
-      "id": "plc_s7_1200_front",
+      "id": "plc_general",
       "hash": null,
-      "title": "Siemens S7-1200 PLC - Vista frontal",
-      "description": null,
-      "alt_text": "",
+      "title": "PLC Industrial",
+      "description": "Imagen de PLC industrial para automatizacion",
+      "alt_text": "PLC industrial controller",
       "source": "local",
       "source_url": null,
       "source_page": null,
       "author": null,
       "author_url": null,
       "license": {
-        "type": "cc-by",
-        "name": "Creative Commons Attribution 4.0",
-        "url": "https://creativecommons.org/licenses/by/4.0/",
-        "requires_attribution": true,
+        "type": "internal",
+        "name": "Internal Use",
+        "url": null,
+        "requires_attribution": false,
         "allows_commercial": true,
         "allows_modification": true,
         "attribution_text": null
       },
-      "category": "plc-siemens",
+      "category": "plc-general",
       "tags": [
         "plc",
-        "siemens",
-        "s7-1200",
-        "cpu",
+        "industrial",
+        "automation",
+        "controller",
+        "automatizacion"
+      ],
+      "keywords": [
+        "PLC",
+        "controlador",
+        "programable",
+        "industrial",
+        "automatizacion"
+      ],
+      "width": null,
+      "height": null,
+      "format": "jpg",
+      "size_bytes": null,
+      "local_path": "src/assets/images/plc.jpg",
+      "cached_at": null,
+      "cache_expires": null,
+      "quality_score": 1.0,
+      "relevance_score": 1.0,
+      "created_at": "2026-01-27T12:00:00.000000",
+      "updated_at": "2026-01-27T12:00:00.000000",
+      "extra": {
+        "predefined": false,
+        "needs_download": false
+      }
+    },
+    {
+      "id": "plc_diagram",
+      "hash": null,
+      "title": "Diagrama de PLC",
+      "description": "Diagrama de conexiones y cableado de PLC",
+      "alt_text": "PLC wiring diagram",
+      "source": "local",
+      "source_url": null,
+      "source_page": null,
+      "author": null,
+      "author_url": null,
+      "license": {
+        "type": "internal",
+        "name": "Internal Use",
+        "url": null,
+        "requires_attribution": false,
+        "allows_commercial": true,
+        "allows_modification": true,
+        "attribution_text": null
+      },
+      "category": "plc-diagram",
+      "tags": [
+        "plc",
+        "diagram",
+        "wiring",
+        "conexiones",
+        "cableado",
+        "esquema"
+      ],
+      "keywords": [
+        "diagrama",
+        "PLC",
+        "conexiones",
+        "cableado",
+        "esquema electrico"
+      ],
+      "width": null,
+      "height": null,
+      "format": "png",
+      "size_bytes": null,
+      "local_path": "src/assets/images/plc_diagram.png",
+      "cached_at": null,
+      "cache_expires": null,
+      "quality_score": 1.0,
+      "relevance_score": 1.0,
+      "created_at": "2026-01-27T12:00:00.000000",
+      "updated_at": "2026-01-27T12:00:00.000000",
+      "extra": {
+        "predefined": false,
+        "needs_download": false
+      }
+    },
+    {
+      "id": "abb_robot",
+      "hash": null,
+      "title": "Robot ABB Colaborativo",
+      "description": "Robot colaborativo ABB para aplicaciones industriales",
+      "alt_text": "ABB collaborative robot",
+      "source": "local",
+      "source_url": null,
+      "source_page": null,
+      "author": null,
+      "author_url": null,
+      "license": {
+        "type": "internal",
+        "name": "Internal Use",
+        "url": null,
+        "requires_attribution": false,
+        "allows_commercial": true,
+        "allows_modification": true,
+        "attribution_text": null
+      },
+      "category": "robot-arm",
+      "tags": [
+        "robot",
+        "abb",
+        "cobot",
+        "collaborative",
+        "industrial",
+        "brazo robotico"
+      ],
+      "keywords": [
+        "robot",
+        "ABB",
+        "cobot",
+        "colaborativo",
+        "brazo robotico",
         "industrial"
       ],
-      "keywords": [
-        "S7-1200",
-        "CPU",
-        "Siemens PLC",
-        "Compact PLC"
-      ],
       "width": null,
       "height": null,
-      "format": null,
+      "format": "jpg",
       "size_bytes": null,
-      "local_path": null,
+      "local_path": "src/assets/images/abb_robot.jpg",
       "cached_at": null,
       "cache_expires": null,
-      "quality_score": 0.5,
-      "relevance_score": 0.5,
-      "created_at": "2026-01-25 02:48:54.216397",
-      "updated_at": "2026-01-25 02:48:54.216401",
+      "quality_score": 1.0,
+      "relevance_score": 1.0,
+      "created_at": "2026-01-27T12:00:00.000000",
+      "updated_at": "2026-01-27T12:00:00.000000",
       "extra": {
-        "predefined": true,
-        "suggested_search": "Siemens S7-1200 PLC industrial",
-        "needs_download": true
-      }
-    },
-    {
-      "id": "plc_s7_1500_rack",
-      "hash": null,
-      "title": "Siemens S7-1500 con modulos I/O",
-      "description": null,
-      "alt_text": "",
-      "source": "local",
-      "source_url": null,
-      "source_page": null,
-      "author": null,
-      "author_url": null,
-      "license": {
-        "type": "cc-by",
-        "name": "Creative Commons Attribution 4.0",
-        "url": "https://creativecommons.org/licenses/by/4.0/",
-        "requires_attribution": true,
-        "allows_commercial": true,
-        "allows_modification": true,
-        "attribution_text": null
-      },
-      "category": "plc-siemens",
-      "tags": [
-        "plc",
-        "siemens",
-        "s7-1500",
-        "rack",
-        "modules"
-      ],
-      "keywords": [
-        "S7-1500",
-        "modular PLC",
-        "I/O modules"
-      ],
-      "width": null,
-      "height": null,
-      "format": null,
-      "size_bytes": null,
-      "local_path": null,
-      "cached_at": null,
-      "cache_expires": null,
-      "quality_score": 0.5,
-      "relevance_score": 0.5,
-      "created_at": "2026-01-25 02:48:54.216429",
-      "updated_at": "2026-01-25 02:48:54.216430",
-      "extra": {
-        "predefined": true,
-        "suggested_search": "Siemens S7-1500 rack modules",
-        "needs_download": true
-      }
-    },
-    {
-      "id": "cobot_ur5e",
-      "hash": null,
-      "title": "Universal Robots UR5e Cobot",
-      "description": null,
-      "alt_text": "",
-      "source": "local",
-      "source_url": null,
-      "source_page": null,
-      "author": null,
-      "author_url": null,
-      "license": {
-        "type": "cc-by",
-        "name": "Creative Commons Attribution 4.0",
-        "url": "https://creativecommons.org/licenses/by/4.0/",
-        "requires_attribution": true,
-        "allows_commercial": true,
-        "allows_modification": true,
-        "attribution_text": null
-      },
-      "category": "cobot-ur",
-      "tags": [
-        "cobot",
-        "universal robots",
-        "ur5e",
-        "collaborative"
-      ],
-      "keywords": [
-        "UR5e",
-        "cobot",
-        "collaborative robot"
-      ],
-      "width": null,
-      "height": null,
-      "format": null,
-      "size_bytes": null,
-      "local_path": null,
-      "cached_at": null,
-      "cache_expires": null,
-      "quality_score": 0.5,
-      "relevance_score": 0.5,
-      "created_at": "2026-01-25 02:48:54.216443",
-      "updated_at": "2026-01-25 02:48:54.216444",
-      "extra": {
-        "predefined": true,
-        "suggested_search": "Universal Robots UR5e collaborative robot",
-        "needs_download": true
-      }
-    },
-    {
-      "id": "cobot_fanuc_crx",
-      "hash": null,
-      "title": "FANUC CRX Cobot",
-      "description": null,
-      "alt_text": "",
-      "source": "local",
-      "source_url": null,
-      "source_page": null,
-      "author": null,
-      "author_url": null,
-      "license": {
-        "type": "cc-by",
-        "name": "Creative Commons Attribution 4.0",
-        "url": "https://creativecommons.org/licenses/by/4.0/",
-        "requires_attribution": true,
-        "allows_commercial": true,
-        "allows_modification": true,
-        "attribution_text": null
-      },
-      "category": "cobot-fanuc",
-      "tags": [
-        "cobot",
-        "fanuc",
-        "crx",
-        "collaborative"
-      ],
-      "keywords": [
-        "FANUC CRX",
-        "cobot"
-      ],
-      "width": null,
-      "height": null,
-      "format": null,
-      "size_bytes": null,
-      "local_path": null,
-      "cached_at": null,
-      "cache_expires": null,
-      "quality_score": 0.5,
-      "relevance_score": 0.5,
-      "created_at": "2026-01-25 02:48:54.216453",
-      "updated_at": "2026-01-25 02:48:54.216454",
-      "extra": {
-        "predefined": true,
-        "suggested_search": "FANUC CRX collaborative robot",
-        "needs_download": true
-      }
-    },
-    {
-      "id": "ladder_logic_example",
-      "hash": null,
-      "title": "Ejemplo de diagrama Ladder Logic",
-      "description": null,
-      "alt_text": "",
-      "source": "local",
-      "source_url": null,
-      "source_page": null,
-      "author": null,
-      "author_url": null,
-      "license": {
-        "type": "cc0",
-        "name": "CC0 1.0 Universal (Public Domain)",
-        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
-        "requires_attribution": false,
-        "allows_commercial": true,
-        "allows_modification": true,
-        "attribution_text": null
-      },
-      "category": "ladder-logic",
-      "tags": [
-        "ladder",
-        "plc",
-        "programming",
-        "diagram"
-      ],
-      "keywords": [
-        "ladder logic",
-        "PLC programming"
-      ],
-      "width": null,
-      "height": null,
-      "format": null,
-      "size_bytes": null,
-      "local_path": null,
-      "cached_at": null,
-      "cache_expires": null,
-      "quality_score": 0.5,
-      "relevance_score": 0.5,
-      "created_at": "2026-01-25 02:48:54.216464",
-      "updated_at": "2026-01-25 02:48:54.216465",
-      "extra": {
-        "predefined": true,
-        "suggested_search": "ladder logic diagram PLC",
-        "needs_download": true
-      }
-    },
-    {
-      "id": "profinet_topology",
-      "hash": null,
-      "title": "Topologia de red PROFINET",
-      "description": null,
-      "alt_text": "",
-      "source": "local",
-      "source_url": null,
-      "source_page": null,
-      "author": null,
-      "author_url": null,
-      "license": {
-        "type": "cc-by",
-        "name": "Creative Commons Attribution 4.0",
-        "url": "https://creativecommons.org/licenses/by/4.0/",
-        "requires_attribution": true,
-        "allows_commercial": true,
-        "allows_modification": true,
-        "attribution_text": null
-      },
-      "category": "profinet",
-      "tags": [
-        "profinet",
-        "network",
-        "topology",
-        "industrial ethernet"
-      ],
-      "keywords": [
-        "PROFINET",
-        "network topology"
-      ],
-      "width": null,
-      "height": null,
-      "format": null,
-      "size_bytes": null,
-      "local_path": null,
-      "cached_at": null,
-      "cache_expires": null,
-      "quality_score": 0.5,
-      "relevance_score": 0.5,
-      "created_at": "2026-01-25 02:48:54.216474",
-      "updated_at": "2026-01-25 02:48:54.216474",
-      "extra": {
-        "predefined": true,
-        "suggested_search": "PROFINET network topology diagram",
-        "needs_download": true
-      }
-    },
-    {
-      "id": "hmi_panel_siemens",
-      "hash": null,
-      "title": "Panel HMI Siemens",
-      "description": null,
-      "alt_text": "",
-      "source": "local",
-      "source_url": null,
-      "source_page": null,
-      "author": null,
-      "author_url": null,
-      "license": {
-        "type": "cc-by",
-        "name": "Creative Commons Attribution 4.0",
-        "url": "https://creativecommons.org/licenses/by/4.0/",
-        "requires_attribution": true,
-        "allows_commercial": true,
-        "allows_modification": true,
-        "attribution_text": null
-      },
-      "category": "hmi-screen",
-      "tags": [
-        "hmi",
-        "siemens",
-        "panel",
-        "touchscreen"
-      ],
-      "keywords": [
-        "HMI panel",
-        "SIMATIC HMI"
-      ],
-      "width": null,
-      "height": null,
-      "format": null,
-      "size_bytes": null,
-      "local_path": null,
-      "cached_at": null,
-      "cache_expires": null,
-      "quality_score": 0.5,
-      "relevance_score": 0.5,
-      "created_at": "2026-01-25 02:48:54.216483",
-      "updated_at": "2026-01-25 02:48:54.216483",
-      "extra": {
-        "predefined": true,
-        "suggested_search": "Siemens HMI panel industrial",
-        "needs_download": true
-      }
-    },
-    {
-      "id": "safety_light_curtain",
-      "hash": null,
-      "title": "Cortina de luz de seguridad",
-      "description": null,
-      "alt_text": "",
-      "source": "local",
-      "source_url": null,
-      "source_page": null,
-      "author": null,
-      "author_url": null,
-      "license": {
-        "type": "cc-by",
-        "name": "Creative Commons Attribution 4.0",
-        "url": "https://creativecommons.org/licenses/by/4.0/",
-        "requires_attribution": true,
-        "allows_commercial": true,
-        "allows_modification": true,
-        "attribution_text": null
-      },
-      "category": "safety-equipment",
-      "tags": [
-        "safety",
-        "light curtain",
-        "protection"
-      ],
-      "keywords": [
-        "safety light curtain",
-        "machine guarding"
-      ],
-      "width": null,
-      "height": null,
-      "format": null,
-      "size_bytes": null,
-      "local_path": null,
-      "cached_at": null,
-      "cache_expires": null,
-      "quality_score": 0.5,
-      "relevance_score": 0.5,
-      "created_at": "2026-01-25 02:48:54.216492",
-      "updated_at": "2026-01-25 02:48:54.216493",
-      "extra": {
-        "predefined": true,
-        "suggested_search": "safety light curtain industrial",
-        "needs_download": true
-      }
-    },
-    {
-      "id": "emergency_stop_button",
-      "hash": null,
-      "title": "Boton de paro de emergencia E-Stop",
-      "description": null,
-      "alt_text": "",
-      "source": "local",
-      "source_url": null,
-      "source_page": null,
-      "author": null,
-      "author_url": null,
-      "license": {
-        "type": "cc0",
-        "name": "CC0 1.0 Universal (Public Domain)",
-        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
-        "requires_attribution": false,
-        "allows_commercial": true,
-        "allows_modification": true,
-        "attribution_text": null
-      },
-      "category": "safety-equipment",
-      "tags": [
-        "safety",
-        "e-stop",
-        "emergency",
-        "button"
-      ],
-      "keywords": [
-        "E-stop",
-        "emergency stop"
-      ],
-      "width": null,
-      "height": null,
-      "format": null,
-      "size_bytes": null,
-      "local_path": null,
-      "cached_at": null,
-      "cache_expires": null,
-      "quality_score": 0.5,
-      "relevance_score": 0.5,
-      "created_at": "2026-01-25 02:48:54.216505",
-      "updated_at": "2026-01-25 02:48:54.216506",
-      "extra": {
-        "predefined": true,
-        "suggested_search": "emergency stop button industrial",
-        "needs_download": true
-      }
-    },
-    {
-      "id": "factory_automation_line",
-      "hash": null,
-      "title": "Linea de produccion automatizada",
-      "description": null,
-      "alt_text": "",
-      "source": "local",
-      "source_url": null,
-      "source_page": null,
-      "author": null,
-      "author_url": null,
-      "license": {
-        "type": "unsplash",
-        "name": "Unsplash License",
-        "url": "https://unsplash.com/license",
-        "requires_attribution": false,
-        "allows_commercial": true,
-        "allows_modification": true,
-        "attribution_text": null
-      },
-      "category": "factory",
-      "tags": [
-        "factory",
-        "automation",
-        "production",
-        "line"
-      ],
-      "keywords": [
-        "factory automation",
-        "production line"
-      ],
-      "width": null,
-      "height": null,
-      "format": null,
-      "size_bytes": null,
-      "local_path": null,
-      "cached_at": null,
-      "cache_expires": null,
-      "quality_score": 0.5,
-      "relevance_score": 0.5,
-      "created_at": "2026-01-25 02:48:54.216515",
-      "updated_at": "2026-01-25 02:48:54.216516",
-      "extra": {
-        "predefined": true,
-        "suggested_search": "factory automation production line",
-        "needs_download": true
-      }
-    },
-    {
-      "id": "control_panel_cabinet",
-      "hash": null,
-      "title": "Gabinete de control industrial",
-      "description": null,
-      "alt_text": "",
-      "source": "local",
-      "source_url": null,
-      "source_page": null,
-      "author": null,
-      "author_url": null,
-      "license": {
-        "type": "cc-by",
-        "name": "Creative Commons Attribution 4.0",
-        "url": "https://creativecommons.org/licenses/by/4.0/",
-        "requires_attribution": true,
-        "allows_commercial": true,
-        "allows_modification": true,
-        "attribution_text": null
-      },
-      "category": "industrial-general",
-      "tags": [
-        "control panel",
-        "cabinet",
-        "electrical"
-      ],
-      "keywords": [
-        "control panel",
-        "electrical cabinet"
-      ],
-      "width": null,
-      "height": null,
-      "format": null,
-      "size_bytes": null,
-      "local_path": null,
-      "cached_at": null,
-      "cache_expires": null,
-      "quality_score": 0.5,
-      "relevance_score": 0.5,
-      "created_at": "2026-01-25 02:48:54.216523",
-      "updated_at": "2026-01-25 02:48:54.216524",
-      "extra": {
-        "predefined": true,
-        "suggested_search": "industrial control panel cabinet",
-        "needs_download": true
+        "predefined": false,
+        "needs_download": false
       }
     }
   ]

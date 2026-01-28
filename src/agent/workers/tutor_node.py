@@ -216,10 +216,6 @@ def search_relevant_images(
     if not IMAGES_AVAILABLE:
         return []
 
-    # Visual learners get more images
-    if "visual" in learning_style.lower():
-        max_images = min(max_images + 2, 5)
-
     try:
         sourcer = get_image_sourcer()
 
@@ -243,6 +239,7 @@ def search_relevant_images(
                 "source": img.source.value if hasattr(img.source, 'value') else str(img.source),
                 "source_url": img.source_url,
                 "source_page": img.source_page,
+                "local_path": img.local_path,
                 "author": img.author,
                 "license": {
                     "name": img.license.name,
@@ -363,12 +360,12 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
     learning_style_raw = state.get("learning_style", {})
     learning_style_text = format_learning_style(learning_style_raw)
 
-    # Search for relevant images
+    # Search for relevant images (only 1 best match)
     relevant_images = search_relevant_images(
         user_message=user_message,
         evidence_text=evidence_text,
         learning_style=learning_style_text,
-        max_images=3
+        max_images=1
     )
     if relevant_images:
         events.append(event_report("tutor", f"Found {len(relevant_images)} relevant images"))

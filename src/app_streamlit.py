@@ -671,62 +671,26 @@ def extract_questions_from_event(event: Dict) -> List[Dict]:
 
 
 def render_images(images: List[Dict[str, Any]]):
-    """Renderiza las imágenes relevantes en el chat"""
+    """Renderiza la imagen mas relevante en el chat"""
     if not images:
         return
-    
-    st.markdown(
-        '<div style="margin: 16px 0; color: #9a9a9a; font-size: 14px; font-weight: 500;">📸 Relevant Images</div>',
-        unsafe_allow_html=True
-    )
-    
-    # Show up to 3 images in columns
-    num_images = min(len(images), 3)
-    cols = st.columns(num_images)
-    
-    for idx, img in enumerate(images[:num_images]):
-        with cols[idx]:
-            img_id = img.get("id", "")
-            title = img.get("title", "Technical Image")
-            category = img.get("category", "general")
-            source = img.get("source", "local")
-            source_url = img.get("source_url", "")
-            alt_text = img.get("alt_text", title)
-            
-            # Construct image path
-            # Images are stored in assets/images/<category>/<filename>
-            # The img_id should contain the filename
-            image_path = f"assets/images/{category}/{img_id}"
-            
-            # Try to display the image
-            try:
-                # First try local file
-                if os.path.exists(image_path):
-                    st.image(image_path, caption=title, width="stretch")
-                # If not local but has source_url, display image directly from URL
-                elif source_url:
-                    try:
-                        st.image(source_url, caption=title, width="stretch")
-                    except Exception as url_error:
-                        # If URL image fails, show clickable link as fallback
-                        logger.warning(f"Could not load image from URL {source_url}: {url_error}")
-                        st.markdown(
-                            f'<div style="background: #2a2a2a; padding: 12px; border-radius: 8px; text-align: center;">'
-                            f'<a href="{source_url}" target="_blank" style="color: #7a7a7a; text-decoration: none;">'
-                            f'🖼️ View: {title}</a></div>',
-                            unsafe_allow_html=True
-                        )
-                else:
-                    st.caption(f"⚠️ Image not found: {img_id}")
-            except Exception as e:
-                logger.warning(f"Error displaying image {img_id}: {e}")
-                st.caption(f"⚠️ Could not load image")
-            
-            # Add attribution if needed
-            license_info = img.get("license", {})
-            if isinstance(license_info, dict) and license_info.get("requires_attribution"):
-                author = img.get("author", "Unknown")
-                st.caption(f"📷 {author}")
+
+    # Show only 1 best matching image
+    img = images[0]
+    img_id = img.get("id", "")
+    title = img.get("title", "Technical Image")
+    local_path = img.get("local_path", "")
+
+    try:
+        # First try local file using local_path from metadata
+        if local_path and os.path.exists(local_path):
+            st.image(local_path, caption=title, width="stretch")
+        elif os.path.exists(f"src/assets/images/{img_id}.jpg"):
+            st.image(f"src/assets/images/{img_id}.jpg", caption=title, width="stretch")
+        elif os.path.exists(f"src/assets/images/{img_id}.png"):
+            st.image(f"src/assets/images/{img_id}.png", caption=title, width="stretch")
+    except Exception as e:
+        logger.warning(f"Error displaying image {img_id}: {e}")
 
 
 def render_suggestions(suggestions: List[str]):
@@ -812,7 +776,7 @@ def render_questions_wizard() -> bool:
                 if st.button(
                     label,
                     key=f"opt_{question_id}_{i}",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary" if i == 0 else "secondary"
                 ):
                     st.session_state.question_answers[question_id] = value
@@ -829,7 +793,7 @@ def render_questions_wizard() -> bool:
 
         col1, col2 = st.columns([1, 3])
         with col1:
-            if st.button("Continue", key=f"next_{question_id}", use_container_width=True):
+            if st.button("Continue", key=f"next_{question_id}", width="stretch"):
                 if user_answer:
                     st.session_state.question_answers[question_id] = user_answer
                     st.session_state.current_question_idx += 1
@@ -838,7 +802,7 @@ def render_questions_wizard() -> bool:
                     st.warning("Please provide an answer before continuing.")
 
         with col2:
-            if st.button("Skip question", key=f"skip_{question_id}", use_container_width=True):
+            if st.button("Skip question", key=f"skip_{question_id}", width="stretch"):
                 st.session_state.question_answers[question_id] = "Not answered"
                 st.session_state.current_question_idx += 1
                 st.rerun()
@@ -960,7 +924,7 @@ def main():
         st.caption("Active Thread ID:")
         st.code(st.session_state.thread_id[:20] + "...", language=None)
 
-        if st.button("Reset System State", type="primary", use_container_width=True):
+        if st.button("Reset System State", type="primary", width="stretch"):
             keys_to_reset = [
                 "thread_id", "messages", "window_count", "rolling_summary",
                 "pending_interrupt", "raw_logs", "pending_questions",
@@ -972,7 +936,7 @@ def main():
                     del st.session_state[key]
             st.rerun()
 
-        if st.button("Clear Chat History", use_container_width=True):
+        if st.button("Clear Chat History", width="stretch"):
             st.session_state.messages = []
             st.session_state.pending_questions = []
             st.session_state.pending_content = ""
