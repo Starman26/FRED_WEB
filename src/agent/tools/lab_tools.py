@@ -990,9 +990,9 @@ def format_station_details_for_display(details: Dict) -> str:
         return f"❌ Error: {details.get('error')}"
     
     station = details['station']
-    lines = [f"## 🏭 Estación {station['number']} - {station['name']}\n"]
-    lines.append(f"📍 Ubicación: {station['location']}")
-    lines.append(f"📝 {station['description']}\n")
+    lines = [f"##  Estación {station['number']} - {station['name']}\n"]
+    lines.append(f" Ubicación: {station['location']}")
+    lines.append(f" {station['description']}\n")
     
     # PLC
     plc = details.get('plc')
@@ -1042,7 +1042,7 @@ def format_station_details_for_display(details: Dict) -> str:
     
     # Estado operativo
     ready = details['ready_to_operate']
-    ready_icon = "✅" if ready else "❌"
+    ready_icon = "" if ready else "❌"
     lines.append(f"### {ready_icon} Estado Operativo: {'LISTA' if ready else 'NO LISTA'}")
     if not ready:
         rd = details['ready_details']
@@ -1062,7 +1062,7 @@ def format_errors_for_display(errors_data: Dict) -> str:
         return f"❌ Error: {errors_data.get('error')}"
     
     if errors_data['total_errors'] == 0:
-        return "✅ No hay errores activos en el laboratorio"
+        return " No hay errores activos en el laboratorio"
     
     lines = [f"## ⚠️ Errores Activos ({errors_data['total_errors']})\n"]
     

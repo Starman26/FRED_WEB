@@ -68,9 +68,9 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
     services_status = init_services()
     
     if services_status["supabase_connected"]:
-        events.append(event_read("bootstrap", " Supabase conectado"))
+        events.append(event_read("bootstrap", " Conectado a base de datos"))
     else:
-        events.append(event_error("bootstrap", " Supabase no disponible"))
+        events.append(event_error("bootstrap", " Database no disponible"))
     
     if services_status["embeddings_ready"]:
         events.append(event_read("bootstrap", " Embeddings listos"))

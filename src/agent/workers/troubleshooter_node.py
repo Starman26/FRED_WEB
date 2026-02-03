@@ -7,6 +7,7 @@ CAPACIDADES:
 3. Preguntas estructuradas con opciones del lab real
 4. Ejecución de acciones (cambiar modo cobot, etc.)
 5. Conocimiento base del laboratorio (robots, estaciones, terminología)
+6. Knowledge Graph para búsqueda de soluciones conocidas
 """
 import os
 import json
@@ -36,6 +37,21 @@ from src.agent.contracts.question_schema import (
 )
 from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report, event_error
+
+# ==========================================
+# KNOWLEDGE GRAPH INTEGRATION
+# ==========================================
+try:
+    from src.agent.memory.knowledge_graph import get_knowledge_graph, EntityType
+    from src.agent.memory.knowledge_helpers import (
+        find_solution_for_error,
+        get_station_knowledge,
+        log_agent_decision,
+    )
+    KNOWLEDGE_GRAPH_AVAILABLE = True
+except ImportError:
+    KNOWLEDGE_GRAPH_AVAILABLE = False
+    logger.warning("Knowledge Graph not available - running without it")
 
 
 def extract_suggestions_from_text(text: str) -> tuple[str, list[str]]:
@@ -112,6 +128,73 @@ def get_knowledge_context(user_message: str) -> str:
         context_parts.append(get_lab_knowledge_summary())
     
     return "\n\n".join(context_parts)
+
+
+def search_known_solutions(error_description: str) -> Optional[Dict[str, Any]]:
+    """
+    Busca soluciones conocidas en el Knowledge Graph para un error.
+    
+    Args:
+        error_description: Descripción del error o síntoma
+        
+    Returns:
+        Dict con soluciones encontradas o None si no hay KG disponible
+    """
+    if not KNOWLEDGE_GRAPH_AVAILABLE:
+        return None
+    
+    try:
+        result = find_solution_for_error(error_description)
+        
+        if result and result.get("matches"):
+            return {
+                "found": True,
+                "matches": result["matches"],
+                "best_match": result["matches"][0] if result["matches"] else None,
+            }
+        return {"found": False, "matches": []}
+    except Exception as e:
+        logger.error(f"Error searching Knowledge Graph: {e}")
+        return None
+
+
+def enrich_response_with_knowledge(response: str, error_type: str, station: Optional[int] = None) -> str:
+    """
+    Enriquece una respuesta con información del Knowledge Graph.
+    
+    Args:
+        response: Respuesta original del LLM
+        error_type: Tipo de error detectado
+        station: Número de estación si aplica
+        
+    Returns:
+        Respuesta enriquecida con conocimiento adicional
+    """
+    if not KNOWLEDGE_GRAPH_AVAILABLE:
+        return response
+    
+    try:
+        # Buscar soluciones conocidas
+        kg_result = search_known_solutions(error_type)
+        
+        if kg_result and kg_result.get("found") and kg_result.get("best_match"):
+            match = kg_result["best_match"]
+            
+            # Agregar información del KG al final de la respuesta
+            kg_section = f"""
+
+---
+**Known Solution from Knowledge Base:**
+- Error: {match.get('error_name', error_type)}
+- Recommended action: {match.get('solutions', [{}])[0].get('action', 'N/A') if match.get('solutions') else 'N/A'}
+- Possible causes: {', '.join(match.get('causes', [])[:3])}
+"""
+            return response + kg_section
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error enriching response: {e}")
+        return response
 
 
 # ============================================
@@ -1869,6 +1952,34 @@ Do you want me to try to fix the issues found?"""
                 confidence=1.0,
             )
             events.append(event_report("troubleshooting", "✅ Consulta completada"))
+            
+            # Generar sugerencias basadas en el tipo de query
+            query_type = query_request.get("query", "")
+            if query_type == "station_details":
+                station = query_request.get("station", "")
+                suggestions = [
+                    f"Check if there are active errors at station {station}",
+                    f"Start a routine on station {station}",
+                    "View the complete lab overview"
+                ]
+            elif query_type == "lab_overview":
+                suggestions = [
+                    "Check details of a specific station",
+                    "Show me all active errors in the lab",
+                    "What cobots are currently running?"
+                ]
+            elif query_type == "active_errors":
+                suggestions = [
+                    "Try to fix these errors automatically",
+                    "Show me which stations have problems",
+                    "What is the status of the PLCs?"
+                ]
+            else:
+                suggestions = [
+                    "Check status of other equipment",
+                    "Run a diagnostic on a specific station",
+                    "Show me the complete lab overview"
+                ]
         else:
             output = WorkerOutputBuilder.troubleshooting(
                 content=f"❌ Error en consulta: {result.get('error')}",
@@ -1877,11 +1988,17 @@ Do you want me to try to fix the issues found?"""
                 summary="No se pudo completar la consulta",
                 confidence=0.5,
             )
+            suggestions = [
+                "Try checking a different station",
+                "View the complete lab status",
+                "What equipment is currently connected?"
+            ]
         
         return {
             "worker_outputs": [output.model_dump()],
             "troubleshooting_result": output.model_dump_json(),
             "events": events,
+            "follow_up_suggestions": suggestions,
         }
     
     # ==========================================

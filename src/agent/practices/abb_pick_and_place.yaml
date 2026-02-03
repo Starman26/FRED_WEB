@@ -1,0 +1,640 @@
+# =============================================================================
+# PRÁCTICA: Configuración y Programación del Robot ABB IRB 1100
+# FrED Factory Laboratory - Tecnológico de Monterrey
+# =============================================================================
+
+id: "abb_irb1100_pick_and_place"
+title: "Configuración y Programación ABB IRB 1100 - Pick and Place"
+description: |
+  Esta práctica te guiará paso a paso en la configuración y programación 
+  del robot ABB IRB 1100 para realizar una aplicación de Pick and Place.
+  Aprenderás a usar el FlexPendant, hacer jogging del robot, y crear
+  un programa RAPID básico.
+
+version: "1.0"
+author: "Alexandro Antonio Ortiz Espinoza"
+
+# Requisitos previos
+prerequisites:
+  - "comp_safety_basics"      # Seguridad básica en laboratorio
+  - "comp_cobot_operation"    # Operación básica de cobots (opcional)
+
+required_equipment:
+  - "Robot ABB IRB 1100-4/0.58"
+  - "Controller OmniCore C30"
+  - "FlexPendant"
+  - "Piezas para pick and place"
+
+# Metadata
+difficulty_level: "beginner"
+estimated_total_time_minutes: 90
+competencies_developed:
+  - "comp_cobot_operation"
+  - "comp_safety_basics"
+  - "comp_robot_programming"
+
+passing_score: 0.7
+
+# =============================================================================
+# SECCIONES DE LA PRÁCTICA
+# =============================================================================
+sections:
+
+  # ---------------------------------------------------------------------------
+  # SECCIÓN 1: Introducción a Robótica Industrial
+  # ---------------------------------------------------------------------------
+  - id: "sec_intro"
+    title: "Introducción a Robótica Industrial"
+    description: "Conceptos fundamentales sobre robots industriales"
+    estimated_time_minutes: 15
+    competencies:
+      - "comp_cobot_operation"
+    
+    learning_objectives:
+      - "Entender qué es un robot industrial y sus aplicaciones"
+      - "Identificar los tipos de juntas en robots"
+      - "Conocer las configuraciones comunes de robots"
+    
+    steps:
+      - id: "intro_1"
+        title: "¿Qué es un Robot Industrial?"
+        step_type: "theory"
+        content: |
+          Los robots industriales son manipuladores programables de múltiples ejes,
+          usados en automatización industrial. Combinan tecnologías de mecánica,
+          electrónica, sistemas de control y sensores.
+          
+          **Aplicaciones típicas:**
+          - Soldadura por puntos
+          - Transferencia de materiales
+          - Carga de máquinas
+          - Pintura por spray
+          - Ensamblaje
+        
+        details: |
+          Los robots industriales son cruciales porque pueden:
+          - Reemplazar trabajadores en condiciones peligrosas
+          - Proporcionar rendimiento consistente y repetible
+          - Ofrecer flexibilidad mediante reprogramación
+          - Integrarse con sistemas computarizados
+
+      - id: "intro_2"
+        title: "Anatomía del Robot"
+        step_type: "theory"
+        content: |
+          Un robot manipulador consiste en una serie de **juntas (joints)** y 
+          **eslabones (links)**. Las juntas proporcionan movimiento relativo 
+          controlado entre eslabones.
+          
+          **Los 5 tipos de juntas son:**
+          1. **Junta Lineal (L)**: Movimiento deslizante paralelo
+          2. **Junta Ortogonal (O)**: Movimiento deslizante perpendicular
+          3. **Junta Rotacional (R)**: Rotación con eje perpendicular
+          4. **Junta de Torsión (T)**: Rotación con eje paralelo
+          5. **Junta de Revolución (V)**: Rotación con salida perpendicular
+        
+        image_ref: "fig_2_joint_types"
+        
+        questions:
+          - id: "q_intro_joints"
+            question: "¿Cuántos tipos principales de juntas mecánicas existen en robots industriales?"
+            question_type: "multiple_choice"
+            options:
+              - "3 tipos"
+              - "5 tipos"
+              - "6 tipos"
+              - "4 tipos"
+            correct_answer: "5 tipos"
+            hints:
+              - "Piensa en movimientos traslacionales y rotacionales"
+            points: 1
+
+      - id: "intro_3"
+        title: "Configuraciones de Robot"
+        step_type: "theory"
+        content: |
+          El robot ABB IRB 1100 que usarás es de **configuración articulada** 
+          (Jointed-arm robot), similar a un brazo humano con:
+          - Base rotativa (T-joint)
+          - Hombro (R-joint)
+          - Codo (R-joint)
+          - Muñeca con 3 ejes adicionales (roll, pitch, yaw)
+          
+          **Otras configuraciones comunes:**
+          - Polar
+          - SCARA
+          - Cartesiano (Gantry)
+          - Delta
+        
+        image_ref: "fig_4_configurations"
+
+      - id: "intro_checkpoint"
+        title: "Verificación de Comprensión"
+        step_type: "checkpoint"
+        content: "Antes de continuar, verifiquemos que entendiste los conceptos básicos."
+        
+        questions:
+          - id: "q_config"
+            question: "¿Qué tipo de configuración tiene el robot ABB IRB 1100?"
+            question_type: "multiple_choice"
+            options:
+              - "SCARA"
+              - "Cartesiano"
+              - "Articulado (Jointed-arm)"
+              - "Delta"
+            correct_answer: "Articulado (Jointed-arm)"
+            points: 1
+          
+          - id: "q_axes"
+            question: "¿Cuántos ejes de movimiento tiene típicamente un robot articulado industrial?"
+            question_type: "multiple_choice"
+            options:
+              - "4 ejes"
+              - "5 ejes"
+              - "6 ejes"
+              - "3 ejes"
+            correct_answer: "6 ejes"
+            hints:
+              - "3 ejes para el brazo y cuerpo + ejes adicionales para la muñeca"
+            points: 1
+
+  # ---------------------------------------------------------------------------
+  # SECCIÓN 2: Componentes del Sistema ABB
+  # ---------------------------------------------------------------------------
+  - id: "sec_components"
+    title: "Componentes del Robot ABB IRB 1100"
+    description: "Identificación de los componentes principales del sistema"
+    estimated_time_minutes: 10
+    competencies:
+      - "comp_cobot_operation"
+    
+    learning_objectives:
+      - "Identificar los 3 componentes principales del sistema"
+      - "Conocer las especificaciones del IRB 1100"
+      - "Entender la función del FlexPendant"
+    
+    steps:
+      - id: "comp_1"
+        title: "Componentes Principales"
+        step_type: "theory"
+        content: |
+          El sistema ABB tiene 3 componentes principales:
+          
+          1. **Robot IRB 1100-4/0.58**
+             - 6 ejes articulados
+             - Payload: 4 kg
+             - Alcance: 580 mm
+             - Repetibilidad: ~0.01 mm
+          
+          2. **Controller OmniCore C30**
+             - Controlador de nueva generación
+             - Basado en RobotWare 7
+             - Soporte para fieldbuses y visión
+          
+          3. **FlexPendant**
+             - Interfaz de operador portátil
+             - Pantalla táctil a color
+             - Controles físicos + dead-man switch
+        
+        image_ref: "fig_7_components"
+        is_critical: false
+
+      - id: "comp_2"
+        title: "El FlexPendant"
+        step_type: "theory"
+        content: |
+          El FlexPendant es tu principal herramienta de interacción. Sus secciones son:
+          
+          - **Code**: Crear y editar programas RAPID
+          - **Program Data**: Variables y datos del sistema
+          - **Jog**: Movimiento manual del robot
+          - **Settings**: Configuración de seguridad y redes
+          - **I/O**: Monitor de señales digitales/analógicas
+          - **Operate**: Ejecución de programas
+          - **Calibrate**: Calibración y configuración de herramientas
+          - **Wizard**: Interfaz simplificada para principiantes
+        
+        image_ref: "fig_9_flexpendant"
+
+  # ---------------------------------------------------------------------------
+  # SECCIÓN 3: Encendido y Seguridad
+  # ---------------------------------------------------------------------------
+  - id: "sec_power_safety"
+    title: "Encendido y Procedimientos de Seguridad"
+    description: "Procedimientos seguros para encender y operar el robot"
+    estimated_time_minutes: 10
+    competencies:
+      - "comp_safety_basics"
+    
+    learning_objectives:
+      - "Encender el sistema de forma segura"
+      - "Entender la función del dead-man switch"
+      - "Conocer los modos de operación"
+    
+    steps:
+      - id: "safety_1"
+        title: "Verificación Pre-Encendido"
+        step_type: "safety"
+        content: |
+          **ANTES DE ENCENDER, VERIFICA:**
+          
+          ✓ Todas las conexiones están correctamente instaladas
+          ✓ Cable de potencia del robot conectado
+          ✓ Cable de señal conectado
+          ✓ FlexPendant conectado al controlador
+          ✓ Área de trabajo despejada
+          ✓ No hay personal dentro del área de trabajo del robot
+        
+        is_critical: true
+        safety_warning: |
+          NUNCA enciendas el robot si hay personas dentro del área de trabajo.
+          El robot puede moverse inesperadamente durante el arranque.
+
+      - id: "safety_2"
+        title: "Encendido del Sistema"
+        step_type: "procedure"
+        content: |
+          **Pasos para encender:**
+          
+          1. Localiza el **interruptor principal** en la parte trasera del OmniCore C30
+          2. Gira el interruptor a posición ON
+          3. Espera a que el FlexPendant arranque y cargue RobotWare
+          4. El sistema está listo cuando aparece la pantalla principal
+        
+        image_ref: "fig_8_power_switch"
+        
+        tips:
+          - "El arranque completo puede tomar 1-2 minutos"
+          - "Si hay errores, revisa el Event Log en el FlexPendant"
+
+      - id: "safety_3"
+        title: "El Dead-Man Switch"
+        step_type: "safety"
+        content: |
+          El **dead-man switch** (interruptor de hombre muerto) es un dispositivo 
+          de seguridad CRÍTICO ubicado en la parte trasera del FlexPendant.
+          
+          **REGLA FUNDAMENTAL:**
+          El robot SOLO se mueve mientras mantienes presionado el dead-man switch.
+          Si lo sueltas, el robot se detiene inmediatamente.
+          
+          Esto asegura que el operador tiene control total en todo momento.
+        
+        image_ref: "fig_11_deadman"
+        is_critical: true
+        safety_warning: |
+          SIEMPRE mantén una mano en el dead-man switch cuando el robot esté en movimiento.
+          Suéltalo inmediatamente si observas cualquier situación peligrosa.
+        
+        questions:
+          - id: "q_deadman"
+            question: "¿Qué sucede cuando sueltas el dead-man switch?"
+            question_type: "multiple_choice"
+            options:
+              - "El robot continúa moviéndose"
+              - "El robot se detiene inmediatamente"
+              - "El robot reduce velocidad gradualmente"
+              - "No pasa nada"
+            correct_answer: "El robot se detiene inmediatamente"
+            points: 2
+
+      - id: "safety_checkpoint"
+        title: "Confirmación de Seguridad"
+        step_type: "checkpoint"
+        content: |
+          Antes de proceder al jogging, confirma que entiendes los procedimientos de seguridad.
+        is_critical: true
+        
+        questions:
+          - id: "q_safety_confirm"
+            question: "¿Estás listo para trabajar con el robot de forma segura? ¿Has identificado la ubicación del dead-man switch?"
+            question_type: "true_false"
+            correct_answer: "true"
+            points: 1
+
+  # ---------------------------------------------------------------------------
+  # SECCIÓN 4: Jogging del Robot
+  # ---------------------------------------------------------------------------
+  - id: "sec_jogging"
+    title: "Jogging Manual del Robot"
+    description: "Aprende a mover el robot manualmente usando el FlexPendant"
+    estimated_time_minutes: 20
+    competencies:
+      - "comp_cobot_operation"
+    
+    learning_objectives:
+      - "Acceder a la interfaz de jogging"
+      - "Entender los diferentes modos de jog"
+      - "Mover el robot de forma segura en cada modo"
+    
+    steps:
+      - id: "jog_1"
+        title: "Preparación para Jogging"
+        step_type: "procedure"
+        content: |
+          **Antes de hacer jogging:**
+          
+          1. Abre el **Control Panel** (ícono de engranaje)
+          2. Selecciona **Manual Mode**
+          3. Asegúrate de que **Motors On** esté seleccionado
+          4. Presiona y mantén el **dead-man switch**
+          5. Configura **Run Speed** a un valor seguro (10-25%)
+        
+        image_ref: "fig_10_control_panel"
+        safety_warning: "No uses velocidades mayores a 25% mientras aprendes"
+
+      - id: "jog_2"
+        title: "Acceder a la Interfaz de Jog"
+        step_type: "procedure"
+        content: |
+          1. Desde el menú inferior, selecciona **Jog**
+          2. Aparecerá la vista de Joystick Jog con:
+             - Modelo 3D del robot
+             - Información de posición actual
+             - Parámetros de jogging a la derecha
+        
+        image_ref: "fig_12_jog_axis"
+
+      - id: "jog_3"
+        title: "Modos de Jogging"
+        step_type: "theory"
+        content: |
+          Hay varios modos de jog disponibles:
+          
+          **Axis 1-3**: Mueve los ejes de la base y brazo
+          - Joystick izq/der → Axis 1 (base)
+          - Joystick arriba/abajo → Axis 2
+          - Girar joystick → Axis 3
+          
+          **Axis 4-6**: Mueve los ejes de la muñeca
+          - Joystick izq/der → Axis 4
+          - Joystick arriba/abajo → Axis 5
+          - Girar joystick → Axis 6
+          
+          **Linear**: Mueve el TCP en X, Y, Z
+          - Joystick izq/der → Y
+          - Joystick arriba/abajo → X
+          - Girar joystick → Z
+        
+        image_ref: "fig_12_jog_axis"
+
+      - id: "jog_practice_1"
+        title: "Práctica: Mover Axis 1-3"
+        step_type: "practical"
+        content: |
+          **EJERCICIO PRÁCTICO:**
+          
+          1. Selecciona modo **Axis 1-3**
+          2. Mantén presionado el dead-man switch
+          3. Mueve lentamente el joystick hacia la izquierda
+          4. Observa cómo rota la base del robot (Axis 1)
+          5. Regresa el joystick al centro
+          6. Ahora mueve el joystick hacia arriba/abajo
+          7. Observa el movimiento del Axis 2 (hombro)
+        
+        is_critical: false
+        tips:
+          - "Haz movimientos pequeños y controlados"
+          - "Si te sientes inseguro, suelta el dead-man switch"
+        
+        questions:
+          - id: "q_jog_practice"
+            question: "¿Pudiste mover exitosamente los ejes 1 y 2 del robot?"
+            question_type: "true_false"
+            points: 2
+
+      - id: "jog_practice_2"
+        title: "Práctica: Movimiento Lineal"
+        step_type: "practical"
+        content: |
+          **EJERCICIO PRÁCTICO:**
+          
+          1. Cambia a modo **Linear**
+          2. Selecciona sistema de coordenadas **World**
+          3. Mantén presionado el dead-man switch
+          4. Mueve el TCP en la dirección Z (girar joystick)
+          5. Observa cómo el end-effector sube/baja manteniendo orientación
+        
+        tips:
+          - "En modo Linear, el robot coordina todos sus ejes para movimiento cartesiano"
+          - "Es más intuitivo para posicionar el efector final"
+
+  # ---------------------------------------------------------------------------
+  # SECCIÓN 5: Programación Pick and Place
+  # ---------------------------------------------------------------------------
+  - id: "sec_programming"
+    title: "Programación Pick and Place"
+    description: "Crea tu primer programa RAPID para pick and place"
+    estimated_time_minutes: 35
+    competencies:
+      - "comp_robot_programming"
+      - "comp_cobot_operation"
+    
+    learning_objectives:
+      - "Crear un nuevo programa RAPID"
+      - "Enseñar posiciones (robtargets)"
+      - "Usar instrucciones MoveJ y MoveL"
+      - "Ejecutar el programa de forma segura"
+    
+    steps:
+      - id: "prog_1"
+        title: "Crear Nuevo Programa"
+        step_type: "procedure"
+        content: |
+          **Pasos para crear un programa:**
+          
+          1. Desde la pantalla principal, toca **Code**
+          2. Si no hay programa, ve a **Program Data → Program → New Program**
+          3. Dale un nombre como "PickAndPlace"
+          4. Verifica que existe una rutina **main**
+             - Click en tres puntos de MainModule → Ver Rutinas
+        
+        image_ref: "fig_15_new_program"
+
+      - id: "prog_2"
+        title: "Puntos del Pick and Place"
+        step_type: "theory"
+        content: |
+          Para un pick and place básico necesitas 5 posiciones:
+          
+          1. **pHome** - Posición inicial/segura
+          2. **pAbovePick** - Arriba del punto de recogida
+          3. **pPick** - Punto exacto de recogida
+          4. **pAbovePlace** - Arriba del punto de colocación
+          5. **pPlace** - Punto exacto de colocación
+          
+          Esto permite movimientos seguros evitando colisiones.
+        
+        image_ref: "fig_19_points"
+
+      - id: "prog_3"
+        title: "Enseñar Posición Home"
+        step_type: "procedure"
+        content: |
+          **Enseñar la primera posición (pHome):**
+          
+          1. Ve a **Jog** y posiciona el robot en una posición segura inicial
+          2. Regresa a **Code → tu módulo → rutina main**
+          3. Selecciona **Add Instruction**
+          4. Elige **MoveJ** (movimiento articular)
+          5. Toca los tres puntos junto al target
+          6. Escribe el nombre: **pHome**
+          7. Presiona **Create** y luego **Add**
+        
+        image_ref: "fig_18_add_instruction"
+        
+        common_mistakes:
+          - "Olvidar nombrar el punto antes de crear"
+          - "Usar MoveL en lugar de MoveJ para movimientos largos"
+
+      - id: "prog_4"
+        title: "Enseñar Puntos de Pick"
+        step_type: "procedure"
+        content: |
+          **Repite el proceso para los puntos de recogida:**
+          
+          1. **pAbovePick**: Jog el robot 5-10cm arriba del objeto
+             - Add Instruction → MoveJ → nombrar pAbovePick
+          
+          2. **pPick**: Jog el robot hasta la posición exacta de agarre
+             - Add Instruction → MoveL → nombrar pPick
+             - Usa MoveL para aproximación precisa
+        
+        tips:
+          - "Usa MoveJ para movimientos largos (más rápido)"
+          - "Usa MoveL para aproximaciones precisas (trayectoria recta)"
+
+      - id: "prog_5"
+        title: "Enseñar Puntos de Place"
+        step_type: "procedure"
+        content: |
+          **Continúa con los puntos de colocación:**
+          
+          1. **pAbovePlace**: Arriba del punto de destino
+             - Add Instruction → MoveJ → nombrar pAbovePlace
+          
+          2. **pPlace**: Posición exacta de colocación
+             - Add Instruction → MoveL → nombrar pPlace
+          
+          **Opcional**: Agrega un MoveJ final de vuelta a pHome
+        
+        questions:
+          - id: "q_movej_movel"
+            question: "¿Cuándo deberías usar MoveL en lugar de MoveJ?"
+            question_type: "multiple_choice"
+            options:
+              - "Para todos los movimientos"
+              - "Para movimientos largos entre posiciones"
+              - "Para aproximaciones precisas y trayectorias rectas"
+              - "Nunca, siempre usar MoveJ"
+            correct_answer: "Para aproximaciones precisas y trayectorias rectas"
+            points: 2
+
+      - id: "prog_6"
+        title: "Configurar Program Pointer"
+        step_type: "procedure"
+        content: |
+          **Antes de ejecutar:**
+          
+          1. En **Code**, selecciona tu task y módulo
+          2. Toca **PP to routine** y elige **main**
+          3. Confirma compilar/cargar si el controlador lo pide
+          4. El program pointer ahora está al inicio de main
+
+      - id: "prog_7"
+        title: "Ejecutar el Programa"
+        step_type: "procedure"
+        content: |
+          **Ejecución segura:**
+          
+          1. Abre el **Control Panel**
+          2. Verifica: Mode = Manual, Status = Unlocked
+          3. Presiona **Motors On** (mantén dead-man switch)
+          4. Configura Run Speed a 10% para la primera prueba
+          5. Presiona el botón **Play** en la barra de transporte
+          6. El robot ejecutará las instrucciones de main
+          
+          **Para detener:** Suelta el dead-man switch o presiona **Stop**
+        
+        is_critical: true
+        safety_warning: |
+          SIEMPRE ejecuta la primera vez a velocidad baja (10%).
+          Mantén el dedo cerca del dead-man switch para soltar si es necesario.
+
+      - id: "prog_checkpoint"
+        title: "Verificación Final"
+        step_type: "checkpoint"
+        content: "Verifiquemos que completaste la programación correctamente."
+        
+        questions:
+          - id: "q_final_1"
+            question: "¿Cuántos puntos (robtargets) definiste para tu pick and place?"
+            question_type: "short_answer"
+            hints:
+              - "Home, AbovePick, Pick, AbovePlace, Place..."
+            points: 2
+          
+          - id: "q_final_2"
+            question: "¿El robot ejecutó el programa completo sin errores?"
+            question_type: "true_false"
+            points: 3
+          
+          - id: "q_final_3"
+            question: "¿Qué tipo de movimiento (MoveJ o MoveL) usaste para la aproximación final al punto de Pick?"
+            question_type: "short_answer"
+            correct_answer: "MoveL"
+            points: 2
+
+  # ---------------------------------------------------------------------------
+  # SECCIÓN 6: Reflexión Final
+  # ---------------------------------------------------------------------------
+  - id: "sec_reflection"
+    title: "Reflexión y Cierre"
+    description: "Reflexiona sobre lo aprendido y áreas de mejora"
+    estimated_time_minutes: 5
+    
+    learning_objectives:
+      - "Identificar conceptos clave aprendidos"
+      - "Reconocer áreas de oportunidad"
+    
+    steps:
+      - id: "reflect_1"
+        title: "Autoevaluación"
+        step_type: "reflection"
+        content: |
+          Tómate un momento para reflexionar sobre la práctica:
+          
+          - ¿Qué fue lo más fácil?
+          - ¿Qué fue lo más difícil?
+          - ¿Qué te gustaría practicar más?
+        
+        questions:
+          - id: "q_reflect_difficult"
+            question: "¿Cuál fue la parte más desafiante de la práctica?"
+            question_type: "short_answer"
+            points: 1
+          
+          - id: "q_reflect_confident"
+            question: "Del 1 al 5, ¿qué tan seguro te sientes para hacer jogging del robot de forma independiente?"
+            question_type: "multiple_choice"
+            options:
+              - "1 - Necesito mucha más práctica"
+              - "2 - Aún no me siento cómodo"
+              - "3 - Puedo hacerlo con supervisión"
+              - "4 - Me siento bastante seguro"
+              - "5 - Totalmente confiado"
+            points: 1
+
+      - id: "reflect_2"
+        title: "Cierre de Práctica"
+        step_type: "procedure"
+        content: |
+          **Antes de irte:**
+          
+          1. Guarda tu programa (si deseas conservarlo)
+          2. Mueve el robot a una posición segura (pHome)
+          3. Desactiva los motores (Motors Off)
+          4. Apaga el controlador si es necesario
+          5. Reporta cualquier problema al instructor
+          
+          ¡Felicidades por completar la práctica!

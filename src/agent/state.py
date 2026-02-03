@@ -181,6 +181,22 @@ class AgentState(TypedDict):
     # ==========================================
     # NOTA: supabase y embeddings ya NO están en el state porque no son serializables.
     # Usar src.agent.services.get_supabase() y get_embeddings() en su lugar.
+    
+    # ==========================================
+    # 9. PEDAGOGÍA Y APRENDIZAJE (NUEVO)
+    # ==========================================
+    user_competency_summary: Dict[str, Any]  # Summary of user's competency levels
+    current_scaffolding_level: str  # Current support level: "full", "high", "medium", "low", "none"
+    active_exercise: Optional[Dict[str, Any]]  # Currently active exercise if any
+    learning_context: Dict[str, Any]  # Context for pedagogical decisions
+    knowledge_gaps: List[str]  # Identified knowledge gaps
+    
+    # ==========================================
+    # 10. DIAGNOSTIC AND PREDICTION (NUEVO)
+    # ==========================================
+    anomaly_alerts: List[Dict[str, Any]]  # Detected anomalies in sensors/process
+    maintenance_predictions: List[Dict[str, Any]]  # Predicted maintenance needs
+    decision_log: List[Dict[str, Any]]  # Log of agent decisions for traceability
 
 
 # ==========================================
@@ -223,6 +239,18 @@ STATE_DEFAULTS: Dict[str, Any] = {
     
     # Events (se inicializa vacío)
     "events": [],
+    
+    # Pedagogía y Aprendizaje (NUEVO)
+    "user_competency_summary": {},
+    "current_scaffolding_level": "medium",
+    "active_exercise": None,
+    "learning_context": {},
+    "knowledge_gaps": [],
+    
+    # Diagnóstico y Predicción (NUEVO)
+    "anomaly_alerts": [],
+    "maintenance_predictions": [],
+    "decision_log": [],
 }
 
 

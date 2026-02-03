@@ -3,10 +3,11 @@ tutor_node.py - Worker especializado en tutorías y explicaciones educativas
 
 Usa WorkerOutput contract, NO retorna done=True, usa pending_context para evidencia.
 Incluye soporte para imágenes educativas del banco de imágenes.
+Integrado con sistema de prácticas guiadas.
 """
 import os
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -17,6 +18,17 @@ from src.agent.state import AgentState
 from src.agent.contracts.worker_contract import WorkerOutputBuilder, EvidenceItem, create_error_output
 from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report, event_error
+
+# Practice system integration
+try:
+    from src.agent.practices import (
+        get_practice_manager,
+        PracticeSession,
+        StepType,
+    )
+    PRACTICES_AVAILABLE = True
+except ImportError:
+    PRACTICES_AVAILABLE = False
 
 # Import format_helpers with fallback
 try:
@@ -339,6 +351,347 @@ def get_prior_summaries(state: AgentState) -> str:
     return "\n".join([f"- **{ps.get('worker')}**: {ps.get('summary')}" for ps in prior_summaries if ps.get('summary')]) or "No prior context."
 
 
+# =============================================================================
+# PRACTICE SYSTEM INTEGRATION
+# =============================================================================
+
+def detect_practice_intent(user_message: str) -> Optional[Tuple[str, str]]:
+    """
+    Detecta si el usuario quiere iniciar, continuar o completar una práctica.
+    
+    Returns:
+        Tuple (action, practice_id) o None
+        action puede ser: 'start', 'continue', 'next', 'hint', 'complete', 'list'
+    """
+    msg_lower = user_message.lower()
+    
+    # Listar prácticas disponibles
+    if any(kw in msg_lower for kw in ["qué prácticas", "lista de prácticas", "prácticas disponibles", "available practices"]):
+        return ("list", None)
+    
+    # Iniciar práctica específica
+    start_patterns = [
+        r"(?:iniciar|comenzar|empezar|start)\s+(?:la\s+)?práctica\s+(?:de\s+)?(.+)",
+        r"(?:quiero|vamos a)\s+(?:hacer|realizar)\s+(?:la\s+)?práctica\s+(?:de\s+)?(.+)",
+        r"practice[:\s]+(.+)",
+    ]
+    for pattern in start_patterns:
+        match = re.search(pattern, msg_lower)
+        if match:
+            practice_hint = match.group(1).strip()
+            # Mapear a practice_id conocido
+            if any(kw in practice_hint for kw in ["abb", "pick", "place", "irb"]):
+                return ("start", "abb_irb1100_pick_and_place")
+            return ("start", practice_hint)
+    
+    # Continuar/siguiente paso
+    if any(kw in msg_lower for kw in ["siguiente", "next", "continuar", "continue", "listo", "done", "siguiente paso"]):
+        return ("next", None)
+    
+    # Pedir pista
+    if any(kw in msg_lower for kw in ["pista", "hint", "ayuda", "help", "no entiendo", "explica más"]):
+        return ("hint", None)
+    
+    # Completar práctica
+    if any(kw in msg_lower for kw in ["terminar práctica", "finalizar práctica", "complete practice", "finish practice"]):
+        return ("complete", None)
+    
+    return None
+
+
+def get_active_practice_session(state: AgentState) -> Optional[PracticeSession]:
+    """Obtiene la sesión de práctica activa del estado"""
+    if not PRACTICES_AVAILABLE:
+        return None
+    
+    pending_context = state.get("pending_context", {})
+    practice_session_data = pending_context.get("active_practice_session")
+    
+    if practice_session_data:
+        return PracticeSession.from_dict(practice_session_data)
+    
+    return None
+
+
+def handle_practice_request(
+    state: AgentState,
+    user_message: str,
+    intent: Tuple[str, str]
+) -> Optional[Dict[str, Any]]:
+    """
+    Maneja solicitudes relacionadas con prácticas.
+    
+    Returns:
+        Dict con respuesta si se manejó, None si debe continuar normal
+    """
+    if not PRACTICES_AVAILABLE:
+        return None
+    
+    action, practice_id = intent
+    manager = get_practice_manager()
+    user_id = state.get("thread_id", "default_user")
+    
+    events = [event_execute("tutor", f"Practice action: {action}")]
+    
+    # LISTAR PRÁCTICAS
+    if action == "list":
+        practices = manager.get_available_practices()
+        if not practices:
+            content = "No hay prácticas disponibles en este momento."
+        else:
+            content = "## Prácticas Disponibles\n\n"
+            for p in practices:
+                content += f"### {p['title']}\n"
+                content += f"- **Dificultad:** {p['difficulty']}\n"
+                content += f"- **Duración estimada:** {p['estimated_time']} minutos\n"
+                content += f"- **Descripción:** {p['description'][:200]}...\n\n"
+            content += "\nPara iniciar una práctica, escribe: **'Iniciar práctica de [nombre]'**"
+        
+        output = WorkerOutputBuilder.tutor(
+            content=content,
+            learning_objectives=["Conocer prácticas disponibles"],
+            summary="Lista de prácticas disponibles",
+            confidence=1.0,
+        )
+        
+        return {
+            "worker_outputs": [output.model_dump()],
+            "tutor_result": output.model_dump_json(),
+            "events": events,
+            "follow_up_suggestions": [
+                "Start the ABB Pick and Place practice",
+                "What will I learn in each practice?",
+                "What prerequisites do I need?"
+            ],
+        }
+    
+    # INICIAR PRÁCTICA
+    if action == "start" and practice_id:
+        practice = manager.get_practice(practice_id)
+        if not practice:
+            # Buscar práctica similar
+            available = manager.get_available_practices()
+            suggestions = [p['id'] for p in available]
+            content = f"No encontré la práctica '{practice_id}'. Prácticas disponibles: {', '.join(suggestions)}"
+            
+            output = WorkerOutputBuilder.tutor(
+                content=content,
+                learning_objectives=[],
+                summary="Práctica no encontrada",
+                confidence=0.5,
+            )
+            return {
+                "worker_outputs": [output.model_dump()],
+                "tutor_result": output.model_dump_json(),
+                "events": events,
+                "follow_up_suggestions": [f"Iniciar práctica {s}" for s in suggestions[:3]],
+            }
+        
+        # Crear sesión
+        session = manager.get_or_create_session(user_id, practice_id)
+        
+        # Obtener primer paso
+        step_context = manager.get_step_context_for_tutor(session)
+        step_display = manager.format_step_for_display(session)
+        
+        content = f"""## ¡Iniciando Práctica!
+
+**{practice.title}**
+
+{practice.description}
+
+**Duración estimada:** {practice.estimated_total_time_minutes} minutos
+**Dificultad:** {practice.difficulty_level}
+
+---
+
+{step_context}
+
+---
+
+Cuando estés listo para continuar, escribe **"siguiente"** o **"listo"**.
+Si necesitas ayuda, escribe **"pista"** o **"ayuda"**.
+"""
+        
+        output = WorkerOutputBuilder.tutor(
+            content=content,
+            learning_objectives=practice.sections[0].learning_objectives if practice.sections else [],
+            summary=f"Práctica iniciada: {practice.title}",
+            confidence=1.0,
+        )
+        
+        # Guardar sesión en pending_context
+        updated_context = state.get("pending_context", {}).copy()
+        updated_context["active_practice_session"] = session.to_dict()
+        updated_context["practice_mode"] = True
+        
+        return {
+            "worker_outputs": [output.model_dump()],
+            "tutor_result": output.model_dump_json(),
+            "events": events,
+            "pending_context": updated_context,
+            "follow_up_suggestions": [
+                "I'm ready, next step",
+                "I need a hint",
+                "Explain this in more detail"
+            ],
+        }
+    
+    # SIGUIENTE PASO
+    if action == "next":
+        session = get_active_practice_session(state)
+        if not session:
+            return None  # No hay práctica activa, continuar normal
+        
+        practice = manager.get_practice(session.practice_id)
+        if not practice:
+            return None
+        
+        current_step_id = session.current_step_id
+        
+        # Marcar paso actual como completado
+        next_step = manager.complete_step(session, current_step_id, response="completed", score=1.0)
+        
+        events.append(event_report("tutor", f"Step completed: {current_step_id}"))
+        
+        if next_step:
+            # Hay más pasos
+            step_context = manager.get_step_context_for_tutor(session)
+            
+            content = f"""## Paso Completado ✓
+
+¡Muy bien! Avanzando al siguiente paso...
+
+---
+
+{step_context}
+
+---
+
+Escribe **"siguiente"** cuando estés listo, o **"pista"** si necesitas ayuda.
+"""
+            
+            output = WorkerOutputBuilder.tutor(
+                content=content,
+                learning_objectives=[],
+                summary=f"Avanzando en práctica ({len(session.completed_step_ids)}/{practice.get_total_steps()})",
+                confidence=1.0,
+            )
+            
+            # Actualizar sesión en context
+            updated_context = state.get("pending_context", {}).copy()
+            updated_context["active_practice_session"] = session.to_dict()
+            
+            return {
+                "worker_outputs": [output.model_dump()],
+                "tutor_result": output.model_dump_json(),
+                "events": events,
+                "pending_context": updated_context,
+                "follow_up_suggestions": [
+                    "Next step",
+                    "I need more explanation",
+                    "Show me an example"
+                ],
+            }
+        else:
+            # Práctica completada
+            summary = manager.complete_practice(session)
+            
+            content = f"""## 🎉 ¡Práctica Completada!
+
+**{practice.title}**
+
+### Resumen de tu desempeño:
+
+- **Puntuación:** {summary['average_score']:.0f}%
+- **Pasos completados:** {summary['completion_rate']:.0f}%
+- **Pistas solicitadas:** {summary['hints_requested']}
+- **Estado:** {'✅ APROBADO' if summary['passed'] else '⚠️ Necesita más práctica'}
+
+### Fortalezas:
+{chr(10).join(['- ' + s for s in summary['strengths']])}
+
+### Áreas de mejora:
+{chr(10).join(['- ' + s for s in summary['areas_to_improve']])}
+
+### Recomendaciones:
+{chr(10).join(['- ' + r for r in summary['recommendations']])}
+
+---
+
+¡Felicidades por completar la práctica! Tu progreso ha sido guardado.
+"""
+            
+            output = WorkerOutputBuilder.tutor(
+                content=content,
+                learning_objectives=["Completar práctica exitosamente"],
+                summary=f"Práctica completada: {summary['average_score']:.0f}%",
+                confidence=1.0,
+            )
+            
+            # Limpiar práctica del context
+            updated_context = state.get("pending_context", {}).copy()
+            updated_context.pop("active_practice_session", None)
+            updated_context["practice_mode"] = False
+            
+            return {
+                "worker_outputs": [output.model_dump()],
+                "tutor_result": output.model_dump_json(),
+                "events": events,
+                "pending_context": updated_context,
+                "follow_up_suggestions": [
+                    "Start another practice",
+                    "Review what I learned",
+                    "What should I practice next?"
+                ],
+            }
+    
+    # PISTA
+    if action == "hint":
+        session = get_active_practice_session(state)
+        if not session:
+            return None
+        
+        manager.record_hint_request(session)
+        
+        # Obtener contexto con hints
+        step_context = manager.get_step_context_for_tutor(session, include_hints=True)
+        
+        content = f"""## 💡 Aquí tienes una pista
+
+{step_context}
+
+---
+
+Recuerda: pedir ayuda es parte del aprendizaje. Tómate tu tiempo.
+"""
+        
+        output = WorkerOutputBuilder.tutor(
+            content=content,
+            learning_objectives=[],
+            summary="Pista proporcionada",
+            confidence=1.0,
+        )
+        
+        # Actualizar sesión
+        updated_context = state.get("pending_context", {}).copy()
+        updated_context["active_practice_session"] = session.to_dict()
+        
+        return {
+            "worker_outputs": [output.model_dump()],
+            "tutor_result": output.model_dump_json(),
+            "events": events,
+            "pending_context": updated_context,
+            "follow_up_suggestions": [
+                "I understand now, next step",
+                "I still need more help",
+                "Can you show me an example?"
+            ],
+        }
+    
+    return None
+
+
 def tutor_node(state: AgentState) -> Dict[str, Any]:
     """Worker tutor that generates educational content with relevant images."""
     start_time = datetime.utcnow()
@@ -355,6 +708,36 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
             "follow_up_suggestions": ["Ask a technical question", "Request an explanation", "Inquire about lab equipment"],
         }
 
+    # ==========================================================================
+    # PRACTICE MODE: Detectar y manejar solicitudes de práctica
+    # ==========================================================================
+    if PRACTICES_AVAILABLE:
+        # Verificar si hay práctica activa o si el usuario quiere iniciar una
+        practice_intent = detect_practice_intent(user_message)
+        active_session = get_active_practice_session(state)
+        
+        # Si hay práctica activa y el mensaje es simple, tratarlo como "siguiente"
+        if active_session and not practice_intent:
+            # Mensajes simples en práctica activa = avanzar
+            simple_confirmations = ["ok", "sí", "si", "yes", "listo", "entendido", "vale", "de acuerdo"]
+            if user_message.lower().strip() in simple_confirmations:
+                practice_intent = ("next", None)
+        
+        if practice_intent or active_session:
+            # Si hay intent de práctica, procesarlo
+            if practice_intent:
+                practice_response = handle_practice_request(state, user_message, practice_intent)
+                if practice_response:
+                    return practice_response
+            
+            # Si hay práctica activa pero el mensaje es una pregunta sobre el contenido,
+            # continuar con el flujo normal del tutor pero agregar contexto de práctica
+            if active_session:
+                events.append(event_report("tutor", f"Practice mode active: {active_session.practice_id}"))
+
+    # ==========================================================================
+    # FLUJO NORMAL DEL TUTOR
+    # ==========================================================================
     evidence_text, evidence_items = get_evidence_from_context(state)
     context_text = get_prior_summaries(state)
     has_evidence = len(evidence_items) > 0

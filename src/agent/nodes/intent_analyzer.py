@@ -98,6 +98,13 @@ Mensaje: "gracias!"
 Mensaje: "como funciona el cobot?"
 → intent: "learn", action: null, suggested_worker: "tutor"
 
+Mensaje: "quiero iniciar la práctica de ABB" o "iniciar práctica" o "prácticas disponibles"
+→ intent: "learn", action: "start_practice", suggested_worker: "tutor"
+(IMPORTANTE: "práctica" siempre es intent=learn, NO es un comando de cobot)
+
+Mensaje: "siguiente paso" o "continuar práctica"
+→ intent: "learn", action: "continue_practice", suggested_worker: "tutor"
+
 Ahora analiza el mensaje del usuario:'''
 
 
@@ -218,6 +225,11 @@ def intent_analyzer_node(state: AgentState) -> Dict[str, Any]:
         analysis.setdefault("needs_clarification", False)
         analysis.setdefault("summary", user_message[:50])
         
+        # =================================================================
+        # OVERRIDE: Detectar intents de PRÁCTICA (siempre va a tutor)
+        # =================================================================
+        analysis = _override_practice_intent(user_message, analysis)
+        
         elapsed = (datetime.utcnow() - start_time).total_seconds()
         logger.info("intent_analyzer", f"Análisis completado en {elapsed:.2f}s: intent={analysis['intent']}, action={analysis['action']}")
         
@@ -240,6 +252,54 @@ def intent_analyzer_node(state: AgentState) -> Dict[str, Any]:
             "intent_analysis": _fallback_analysis(user_message),
             "events": events + [event_error("intent_analyzer", str(e))],
         }
+
+
+def _override_practice_intent(message: str, analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Detecta si el mensaje es sobre prácticas de laboratorio y ajusta el intent.
+    Las prácticas SIEMPRE van al tutor, nunca a troubleshooting.
+    """
+    msg = message.lower()
+    
+    # Palabras clave de práctica
+    practice_keywords = [
+        "práctica", "practica", "practice",
+        "prácticas disponibles", "lista de prácticas",
+        "iniciar práctica", "comenzar práctica", "empezar práctica",
+        "siguiente paso", "continuar práctica", "siguiente",
+        "pista", "hint", "ayuda con la práctica",
+        "terminar práctica", "finalizar práctica",
+    ]
+    
+    # Verificar si es una solicitud de práctica
+    is_practice_request = any(kw in msg for kw in practice_keywords)
+    
+    if is_practice_request:
+        # Determinar acción específica
+        if any(kw in msg for kw in ["lista", "disponibles", "qué prácticas", "cuáles prácticas"]):
+            action = "list_practices"
+        elif any(kw in msg for kw in ["iniciar", "comenzar", "empezar", "start"]):
+            action = "start_practice"
+        elif any(kw in msg for kw in ["siguiente", "continuar", "next", "listo", "ok"]):
+            action = "continue_practice"
+        elif any(kw in msg for kw in ["pista", "hint", "ayuda"]):
+            action = "practice_hint"
+        elif any(kw in msg for kw in ["terminar", "finalizar", "complete", "finish"]):
+            action = "complete_practice"
+        else:
+            action = "start_practice"
+        
+        # Override el análisis
+        analysis["intent"] = "learn"
+        analysis["action"] = action
+        analysis["suggested_worker"] = "tutor"
+        analysis["needs_clarification"] = False
+        analysis["context_clues"].append("practice_mode")
+        analysis["summary"] = f"Solicitud de práctica: {action}"
+        
+        logger.info("intent_analyzer", f"[OVERRIDE] Práctica detectada: {action}")
+    
+    return analysis
 
 
 def _fallback_analysis(message: str) -> Dict[str, Any]:
@@ -285,6 +345,24 @@ def _fallback_analysis(message: str) -> Dict[str, Any]:
         if f"rutina {i}" in msg or f"routine {i}" in msg or f"modo {i}" in msg:
             analysis["entities"]["routine"] = i
             break
+    
+    # =================================================================
+    # PRIMERO: Detectar prácticas (tienen prioridad sobre comandos)
+    # =================================================================
+    practice_keywords = ["práctica", "practica", "practice", "prácticas"]
+    if any(kw in msg for kw in practice_keywords):
+        analysis["intent"] = "learn"
+        analysis["suggested_worker"] = "tutor"
+        if any(kw in msg for kw in ["lista", "disponibles", "cuáles"]):
+            analysis["action"] = "list_practices"
+        elif any(kw in msg for kw in ["iniciar", "comenzar", "empezar", "start"]):
+            analysis["action"] = "start_practice"
+        elif any(kw in msg for kw in ["siguiente", "continuar", "next"]):
+            analysis["action"] = "continue_practice"
+        else:
+            analysis["action"] = "start_practice"
+        analysis["context_clues"].append("practice_mode")
+        return analysis  # Retornar inmediatamente, no procesar como comando
     
     # Detectar intención y acción
     command_keywords = {

@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "updated_at": "2026-01-27T18:34:57.668624",
+  "updated_at": "2026-01-29T17:04:19.531671",
   "total_images": 11,
   "images": [
     {
@@ -46,8 +46,8 @@
       "cache_expires": null,
       "quality_score": 0.5,
       "relevance_score": 0.5,
-      "created_at": "2026-01-25 06:13:51.453930",
-      "updated_at": "2026-01-25 06:13:51.453942",
+      "created_at": "2026-01-29 17:04:19.530839",
+      "updated_at": "2026-01-29 17:04:19.530850",
       "extra": {
         "predefined": true,
         "suggested_search": "Siemens S7-1200 PLC industrial",
@@ -96,8 +96,8 @@
       "cache_expires": null,
       "quality_score": 0.5,
       "relevance_score": 0.5,
-      "created_at": "2026-01-25 06:13:51.454045",
-      "updated_at": "2026-01-25 06:13:51.454051",
+      "created_at": "2026-01-29 17:04:19.530984",
+      "updated_at": "2026-01-29 17:04:19.530990",
       "extra": {
         "predefined": true,
         "suggested_search": "Siemens S7-1500 rack modules",
@@ -145,8 +145,8 @@
       "cache_expires": null,
       "quality_score": 0.5,
       "relevance_score": 0.5,
-      "created_at": "2026-01-25 06:13:51.454114",
-      "updated_at": "2026-01-25 06:13:51.454118",
+      "created_at": "2026-01-29 17:04:19.531092",
+      "updated_at": "2026-01-29 17:04:19.531097",
       "extra": {
         "predefined": true,
         "suggested_search": "Universal Robots UR5e collaborative robot",
@@ -193,8 +193,8 @@
       "cache_expires": null,
       "quality_score": 0.5,
       "relevance_score": 0.5,
-      "created_at": "2026-01-25 06:13:51.454171",
-      "updated_at": "2026-01-25 06:13:51.454175",
+      "created_at": "2026-01-29 17:04:19.531164",
+      "updated_at": "2026-01-29 17:04:19.531169",
       "extra": {
         "predefined": true,
         "suggested_search": "FANUC CRX collaborative robot",
@@ -241,8 +241,8 @@
       "cache_expires": null,
       "quality_score": 0.5,
       "relevance_score": 0.5,
-      "created_at": "2026-01-25 06:13:51.454227",
-      "updated_at": "2026-01-25 06:13:51.454231",
+      "created_at": "2026-01-29 17:04:19.531225",
+      "updated_at": "2026-01-29 17:04:19.531229",
       "extra": {
         "predefined": true,
         "suggested_search": "ladder logic diagram PLC",
@@ -289,8 +289,8 @@
       "cache_expires": null,
       "quality_score": 0.5,
       "relevance_score": 0.5,
-      "created_at": "2026-01-25 06:13:51.454282",
-      "updated_at": "2026-01-25 06:13:51.454287",
+      "created_at": "2026-01-29 17:04:19.531301",
+      "updated_at": "2026-01-29 17:04:19.531305",
       "extra": {
         "predefined": true,
         "suggested_search": "PROFINET network topology diagram",
@@ -337,8 +337,8 @@
       "cache_expires": null,
       "quality_score": 0.5,
       "relevance_score": 0.5,
-      "created_at": "2026-01-25 06:13:51.454365",
-      "updated_at": "2026-01-25 06:13:51.454370",
+      "created_at": "2026-01-29 17:04:19.531361",
+      "updated_at": "2026-01-29 17:04:19.531365",
       "extra": {
         "predefined": true,
         "suggested_search": "Siemens HMI panel industrial",
@@ -384,8 +384,8 @@
       "cache_expires": null,
       "quality_score": 0.5,
       "relevance_score": 0.5,
-      "created_at": "2026-01-25 06:13:51.454471",
-      "updated_at": "2026-01-25 06:13:51.454476",
+      "created_at": "2026-01-29 17:04:19.531461",
+      "updated_at": "2026-01-29 17:04:19.531465",
       "extra": {
         "predefined": true,
         "suggested_search": "safety light curtain industrial",
@@ -432,8 +432,8 @@
       "cache_expires": null,
       "quality_score": 0.5,
       "relevance_score": 0.5,
-      "created_at": "2026-01-25 06:13:51.454549",
-      "updated_at": "2026-01-25 06:13:51.454553",
+      "created_at": "2026-01-29 17:04:19.531521",
+      "updated_at": "2026-01-29 17:04:19.531526",
       "extra": {
         "predefined": true,
         "suggested_search": "emergency stop button industrial",
@@ -480,8 +480,8 @@
       "cache_expires": null,
       "quality_score": 0.5,
       "relevance_score": 0.5,
-      "created_at": "2026-01-25 06:13:51.454618",
-      "updated_at": "2026-01-25 06:13:51.454622",
+      "created_at": "2026-01-29 17:04:19.531575",
+      "updated_at": "2026-01-29 17:04:19.531579",
       "extra": {
         "predefined": true,
         "suggested_search": "factory automation production line",
@@ -527,8 +527,8 @@
       "cache_expires": null,
       "quality_score": 0.5,
       "relevance_score": 0.5,
-      "created_at": "2026-01-25 06:13:51.454677",
-      "updated_at": "2026-01-25 06:13:51.454680",
+      "created_at": "2026-01-29 17:04:19.531644",
+      "updated_at": "2026-01-29 17:04:19.531647",
       "extra": {
         "predefined": true,
         "suggested_search": "industrial control panel cabinet",

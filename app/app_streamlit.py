@@ -1,5 +1,6 @@
 """
-Aplicación Streamlit para el agente multiagente ATLAS
+Aplicación Streamlit para el desarrollo y prueba 
+del sistema multi agente (Nombre por confirmar.
 
 Features:
 - Human-in-the-Loop con tarjetas de preguntas estructuradas
@@ -9,8 +10,18 @@ Features:
 - Diseño profesional con tonos grises medios
 - Animación de carga en eventos en tiempo real
 - Sugerencias de seguimiento generadas por el agente
+
+Contirbuciones generales:
+- Manejo avanzado de estado en session_state
+- Integración con LangGraph y LangChain
+
 """
 
+# ============================================
+# IMPORTS
+# ============================================
+
+import re
 import os
 import sys
 import json
@@ -19,6 +30,7 @@ import uuid
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import html as html_escape
+import textwrap
 
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
@@ -31,11 +43,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Regex para detectar si un mensaje es solo un tag HTML
+_TAG_ONLY = re.compile(r"^\s*</?[\w\-]+(?:\s+[^>]*)?>\s*$")
+
+# Configuración del logging
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] [%(levelname)s] %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Configuración de la página Streamlit
 
 st.set_page_config(
     page_title="SENTINEL Multi-Agent System",
@@ -44,10 +62,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS personalizado para diseño profesional en grises oscuros
+#============================================
+# Estilos CSS personalizados
+#============================================
+
 st.markdown("""
 <style>
-/* Paleta de grises oscuros y neutrales */
+/* =========================================
+   PALETA DE COLORES 
+   ========================================= */
 :root {
     --gray-900: #0f0f0f;
     --gray-850: #1a1a1a;
@@ -61,7 +84,9 @@ st.markdown("""
     --gray-100: #d0d0d0;
 }
 
-/* Contenedor principal */
+/* =========================================
+   DETALLES DEL CONTENEDOR PRINCIPAL Y SIDEBAR
+   ========================================= */
 .main { background-color: #141414; }
 [data-testid="stAppViewContainer"] { background-color: #141414; }
 [data-testid="stHeader"] { background-color: #141414; }
@@ -73,15 +98,13 @@ section[data-testid="stSidebar"] + div { background-color: #141414; }
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] { color: #b0b0b0; }
 
 /* =========================================
-   TARJETAS DE PREGUNTAS MEJORADAS
+   TARJETAS DE PREGUNTAS 
    ========================================= */
 .question-card {
-    background: linear-gradient(135deg, #3a3a3a 0%, #4a4a4a 100%);
-    border-radius: 12px;
+    background: #3a3a3a;
+    border-radius: 4px;
     padding: 24px;
     margin: 16px 0;
-    border-left: 4px solid #7a7a7a;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     position: relative;
     overflow: hidden;
@@ -90,7 +113,7 @@ section[data-testid="stSidebar"] + div { background-color: #141414; }
 .question-card:hover {
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
-    border-left-color: #9a9a9a;
+    border-left-color: #cecece;
 }
 
 .question-card::before {
@@ -100,7 +123,7 @@ section[data-testid="stSidebar"] + div { background-color: #141414; }
     left: 0;
     width: 100%;
     height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+    background: #3a3a3a;
     transform: translateX(-100%);
 }
 
@@ -126,15 +149,14 @@ section[data-testid="stSidebar"] + div { background-color: #141414; }
 }
 
 .question-title::before {
-    content: "⚡";
     font-size: 12px;
     opacity: 0.8;
 }
 
 .question-text {
     color: #ffffff;
-    font-size: 16px;
-    font-weight: 500;
+    font-size: 14px;
+    font-weight: 400;
     margin-bottom: 20px;
     line-height: 1.5;
     padding: 8px 0;
@@ -164,7 +186,11 @@ section[data-testid="stSidebar"] + div { background-color: #141414; }
     transition: width 0.6s ease;
 }
 
-/* Botones y controles */
+            
+/* =========================================
+   CONTROLES Y BOTONES
+   ========================================= */
+                        
 .stButton > button { background-color: #3a3a3a; color: #d0d0d0; border: 1px solid #7a7a7a; border-radius: 8px; transition: all 0.2s; }
 .stButton > button:hover { background-color: #4a4a4a; border-color: #9a9a9a; }
 .stSelectbox, .stTextInput, .stTextArea { background-color: #2a2a2a; color: #d0d0d0; }
@@ -177,7 +203,7 @@ section[data-testid="stSidebar"] + div { background-color: #141414; }
 [data-testid="stBottomBlockContainer"] { background-color: #141414 !important; }
 
 /* =========================================
-   ANIMACIONES DE TIMELINE PROFESIONALES
+   ANIMACION TIMELINE 
    ========================================= */
 
 /* Entrada suave de los items */
@@ -206,8 +232,8 @@ section[data-testid="stSidebar"] + div { background-color: #141414; }
 
 /* El punto (Dot) estático */
 .timeline-dot {
-    width: 10px;
-    height: 10px;
+    width: 15px;
+    height: 15px;
     background-color: #5a5a5a;
     border-radius: 50%;
     border: 2px solid #2a2a2a;
@@ -231,10 +257,10 @@ section[data-testid="stSidebar"] + div { background-color: #141414; }
 
 /* La línea conectora vertical */
 .timeline-line {
-    width: 2px;
+    width: 1px;
     background-color: #3a3a3a;
     flex-grow: 1;
-    min-height: 24px;
+    min-height: 45px;
     margin-top: -2px;
     z-index: 1;
 }
@@ -266,6 +292,42 @@ section[data-testid="stSidebar"] + div { background-color: #141414; }
     color: #c0c0c0;
     line-height: 1.4;
 }
+@keyframes tw-reveal {
+  from { width: 0; }
+  to { width: 100%; }
+}
+
+@keyframes tw-caret {
+  0%, 100% { border-color: transparent; }
+  50% { border-color: rgba(208,208,208,0.55); }
+}
+
+.typewriter{
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+
+  width: 0;
+  border-right: 0 !important;
+  animation: tw-reveal 0.65s steps(30, end) forwards !important; /* sin tw-caret */
+
+  animation-delay: var(--t-delay, 0s);
+}
+
+.timeline-msg.typewriter{
+  color: #c0c0c0;
+  font-size: 14px;
+}
+
+.timeline-node.typewriter{
+  color: #7a7a7a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
 
 /* =========================================
    SUGERENCIAS DE SEGUIMIENTO
@@ -279,41 +341,87 @@ section[data-testid="stSidebar"] + div { background-color: #141414; }
 }
 
 .suggestions-title {
-    color: #5a5a5a;
-    font-size: 11px;
-    font-weight: 500;
+    color: #aeaeae;
+    font-size: 14px;
+    font-weight: 400;
     margin-bottom: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
+    margin-left: 4px;
+    text-transform: none;
+    letter-spacing: 0.2px;
     text-align: left;
 }
+/* =========================================
+   BOTONES DE SUGERENCIAS
+   ========================================= */
 
-/* Estilizar los botones de sugerencias (tipo secondary) */
 div[data-testid="stVerticalBlock"] button[kind="secondary"] {
-    background-color: transparent !important;
-    border: 1px solid transparent !important;
-    color: #7a7a7a !important;
-    text-align: left !important;
-    padding: 10px 0px !important;
-    font-size: 14px !important;
-    border-radius: 8px !important;
-    transition: all 0.2s ease !important;
-    justify-content: flex-start !important;
-    width: auto !important;
-    display: block !important;
+  width: 100% !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-top: 1px solid #262626 !important;
+  border-radius: 0 !important;
+  padding: 12px 6px !important;
+  color: #b5b5b5 !important;
+  font-size: 15px !important;
+  font-weight: 400;
+  
+  display: flex !important;
+  justify-content: flex-start !important;
+  
+  /* IMPORTANTE: Necesario para posicionar la flecha absoluta respecto al botón */
+  position: relative !important; 
+  overflow: hidden !important; /* Opcional: evita desbordes si la animación es muy larga */
+}
+
+div[data-testid="stVerticalBlock"] button[kind="secondary"] > div {
+  width: 100% !important;
+  display: flex !important;
+  justify-content: flex-start !important;
 }
 
 div[data-testid="stVerticalBlock"] button[kind="secondary"] p {
-    text-align: left !important;
+  width: 100% !important;
+  margin: 0 !important;
+  text-align: left !important;
+  color: #b5b5b5 !important;
+  font-size: 14px !important;
+  transition: color 0.2s ease; /* Suaviza el cambio de color del texto */
 }
 
+/* Estado Hover del Botón */
 div[data-testid="stVerticalBlock"] button[kind="secondary"]:hover {
-    background-color: #1a1a1a !important;
-    border-color: #3a3a3a !important;
-    color: #b0b0b0 !important;
-    padding-left: 12px !important;
-    border-left: 3px solid #5a5a5a !important;
+  background: #171717 !important;
+  color: #d0d0d0 !important;
 }
+
+div[data-testid="stVerticalBlock"] button[kind="secondary"]:hover p {
+  color: #d0d0d0 !important;
+}
+
+/* =========================================
+   Flecha a la derecha del botón
+   ========================================= */
+
+/* Crear la flecha invisible por defecto */
+div[data-testid="stVerticalBlock"] button[kind="secondary"]::after {
+  content: "→";             
+  position: absolute;       
+  right: 20px;              
+  top: 50%;                 
+  transform: translateY(-50%);
+  
+  font-size: 18px;
+  color: #d0d0d0;           
+  opacity: 0;               
+  transition: all 0.3s ease; 
+}
+
+/* Hacer visible la flecha al hacer Hover y moverla */
+div[data-testid="stVerticalBlock"] button[kind="secondary"]:hover::after {
+  opacity: 1;              
+  right: 10px;              
+
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -344,6 +452,48 @@ def install_log_handler_once():
     logging.getLogger("httpx").setLevel(logging.INFO)
     st.session_state.log_handler_installed = True
 
+def normalize_markdown(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s).replace("\r\n", "\n")
+    # Si NO trae code fences, quitamos indent común (evita que todo se vuelva "code block")
+    if "```" not in s:
+        s = textwrap.dedent(s)
+    return s.strip("\n")
+
+def render_assistant_markdown(content: str, label: str = "SENTINEL"):
+    st.markdown(sentinel_badge_html(label), unsafe_allow_html=True)
+    st.markdown(normalize_markdown(content))
+def should_skip_typewriter(content: str) -> bool:
+    """Evita animar outputs con markdown pesado (code fences/tablas)."""
+    if not content:
+        return True
+    s = str(content)
+    if "```" in s:
+        return True
+    if "\n|" in s and "|---" in s:
+        return True
+    return False
+
+def render_assistant_typed_html(content: str, label: str = "SENTINEL", delay_s: float = 0.0):
+    badge = sentinel_badge_html(label)
+    body = text_to_safe_html(content)
+
+    # pequeño jitter para forzar restart del CSS animation
+    jitter = (uuid.uuid4().int % 97) / 100000  # 0.0 a 0.00096
+    dur = 0.55 + jitter
+
+    html = f"""
+    <div class="agent-wrap">
+      {badge}
+      <div class="agent-row">
+        <div class="agent-bubble">
+          <div class="typewriter-multi" style="--t-delay:{delay_s}s; --tw-dur:{dur}s;">{body}</div>
+        </div>
+      </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
 # ============================================
 # FUNCIONES AUXILIARES
@@ -465,7 +615,7 @@ def initialize_session_state():
         "pending_content": "",
         "current_question_idx": 0,
         "question_answers": {},
-        "follow_up_suggestions": [],  # Sugerencias de seguimiento
+        "follow_up_suggestions": [], 
     }
     
     for key, default in defaults.items():
@@ -494,19 +644,22 @@ def extract_message_content(msg: Any) -> Optional[str]:
         return msg.content
     return None
 
-
-def clean_message_content(content: str) -> str:
-    """Limpia el contenido del mensaje eliminando HTML y contenido del wizard"""
+def clean_message_content(content: str) -> str | None:
     if not content:
         return None
-    content_str = str(content)
-    
-    if content_str.strip() in ["None", "null", "", "none"]:
+
+    s = str(content).strip()
+    if s.lower() in {"none", "null", ""}:
         return None
-    
-    if '<div style=' in content_str or '</div>' in content_str or '<span style=' in content_str:
+
+    # Si el mensaje ES un tag suelto (</div>, <br/>, <p>, etc.), lo tiramos
+    if _TAG_ONLY.match(s):
         return None
-    
+
+    # Si viene HTML inline (tu UI), lo tiramos
+    if "<div style=" in s or "<span style=" in s:
+        return None
+
     wizard_indicators = [
         "Pregunta 1: ¿",
         "Pregunta 2: ¿",
@@ -520,96 +673,145 @@ def clean_message_content(content: str) -> str:
         "- PLC: Controlador lógico programable\n",
         "- Cobot: Robot colaborativo\n",
     ]
-    
-    for indicator in wizard_indicators:
-        if indicator in content_str:
-            return None
-    
-    cleaned = content_str.strip()
-    if len(cleaned) < 10:
+    if any(ind in s for ind in wizard_indicators):
         return None
-    
-    return content_str
 
+    if len(s) < 10:
+        return None
 
+    return s
+
+def sentinel_badge_html(label: str = "SENTINEL") -> str:
+    eye_svg = """
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"></path>
+      <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"></path>
+    </svg>
+    """
+    return f"""
+    <div class="agent-badge">
+      <span class="agent-badge-icon">{eye_svg}</span>
+      <span>{html_escape.escape(str(label))}</span>
+    </div>
+    """
+
+def text_to_safe_html(content: str) -> str:
+    """
+    Convierte texto a HTML seguro, soportando bullets tipo '- '.
+    (Sin markdown complejo; mantiene estilo como en tu screenshot.)
+    """
+    if content is None:
+        return ""
+
+    raw = str(content).strip()
+    if raw in ("None", "null", ""):
+        return ""
+
+    esc = raw.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    lines = esc.splitlines()
+
+    html_parts = []
+    in_list = False
+
+    def close_list():
+        nonlocal in_list
+        if in_list:
+            html_parts.append("</ul>")
+            in_list = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        is_bullet = stripped.startswith("- ") or stripped.startswith("* ")
+        if is_bullet:
+            if not in_list:
+                html_parts.append("<ul>")
+                in_list = True
+            html_parts.append(f"<li>{stripped[2:].strip()}</li>")
+            continue
+
+        close_list()
+
+        if stripped == "":
+            html_parts.append("<br/>")
+        else:
+            html_parts.append(f"<div>{stripped}</div>")
+
+    close_list()
+    return "".join(html_parts)
+
+def render_sentinel_message_html(content: str) -> str:
+    badge = sentinel_badge_html("SENTINEL")
+    body = text_to_safe_html(content)
+    return f"""
+    <div class="agent-wrap">
+      {badge}
+      <div class="agent-row">
+        <div class="agent-bubble">{body}</div>
+      </div>
+    </div>
+    """
 def format_event_display(event: Dict, is_last: bool = False, is_loading: bool = False) -> str:
-    """
-    Retorna HTML para mostrar eventos como una línea de tiempo profesional.
-    """
     node = event.get("source", event.get("node", "?")).upper()
     message = event.get("content", event.get("message", ""))
-    
+
     message = html_escape.escape(str(message))
     node = html_escape.escape(str(node))
-    
+
     dot_class = "timeline-dot active" if (is_loading and is_last) else "timeline-dot"
     line_class = "timeline-line hidden" if is_last else "timeline-line"
-    
-    html = f"""
+
+    tw = " typewriter" if (is_loading and is_last) else ""
+
+    return f"""
     <div class="timeline-row">
         <div class="timeline-left">
             <div class="{dot_class}"></div>
             <div class="{line_class}"></div>
         </div>
         <div class="timeline-content">
-            <div class="timeline-node">{node}</div>
-            <div class="timeline-msg">{message}</div>
+            <div class="timeline-node{tw}" style="--t-delay:0s;">{node}</div>
+            <div class="timeline-msg{tw}" style="--t-delay:0.06s;">{message}</div>
         </div>
     </div>
     """
-    return html
 
 
 def extract_messages_from_events(events: List[Dict]) -> tuple[List[str], Dict]:
-    """Extrae mensajes de los eventos, filtrando contenido del wizard"""
     messages = []
+    seen = set()
     final_state = {}
-    node_names = ["plan", "route", "synthesize", "chat", "tutor",
-                  "troubleshooting", "summarizer", "research", "human_input"]
-    
-    skip_indicators = [
-        "Pregunta 1: ¿",
-        "Pregunta 2: ¿",
-        "Pregunta 3: ¿",
-        "Respuestas del usuario:\n",
-        "Necesito saber qué estación presenta problemas",
-        "Necesito saber en qué estación tienes el problema",
-        "Por favor, proporciona la información solicitada",
-        '"question_set"',
-        '"wizard_mode"',
-        "**No respondida**",
-        "- Estación 1\n- Estación 2\n",
-        "- PLC: Controlador",
-        "- Cobot: Robot colaborativo",
-    ]
+
+    node_names = ["plan","route","synthesize","chat","tutor","troubleshooting","summarizer","research","human_input"]
 
     for event in events:
-        if isinstance(event, dict):
-            for node_name in node_names:
-                if node_name in event:
-                    node_data = event[node_name]
-                    if isinstance(node_data, dict) and "messages" in node_data:
-                        msgs = node_data["messages"]
-                        if isinstance(msgs, list):
-                            for m in msgs:
-                                content = extract_message_content(m)
-                                if content:
-                                    content_str = str(content)
-                                    
-                                    if content_str.strip() in ["None", "null", ""]:
-                                        continue
-                                    
-                                    should_skip = False
-                                    for indicator in skip_indicators:
-                                        if indicator in content_str:
-                                            should_skip = True
-                                            break
-                                    
-                                    if not should_skip and len(content_str.strip()) > 10:
-                                        messages.append(content)
-                        final_state.update(node_data)
+        if not isinstance(event, dict):
+            continue
+
+        for node_name in node_names:
+            if node_name not in event:
+                continue
+
+            node_data = event[node_name]
+            if isinstance(node_data, dict):
+                final_state.update(node_data)
+
+                msgs = node_data.get("messages", [])
+                if isinstance(msgs, list):
+                    for m in msgs:
+                        c = extract_message_content(m)
+                        c = clean_message_content(c) if c else None
+                        if not c:
+                            continue
+
+                        key = c.strip()
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        messages.append(key)
 
     return messages, final_state
+
 
 
 def extract_suggestions_from_events(events: List[Dict]) -> List[str]:
@@ -647,28 +849,26 @@ def extract_questions_from_event(event: Dict) -> List[Dict]:
 
 
 def render_suggestions(suggestions: List[str]):
-    """Renderiza las sugerencias de seguimiento como botones clickeables con diseño minimalista"""
     if not suggestions:
         return
-    
+
     st.markdown("""
     <div class="suggestions-container">
-        <div class="suggestions-title">Follow-up suggestions</div>
+        <div class="suggestions-title">Suggested follow-up questions</div>
     </div>
     """, unsafe_allow_html=True)
-    
+
     for i, suggestion in enumerate(suggestions):
-        # Procesar el texto de la sugerencia
         if isinstance(suggestion, dict):
             text = suggestion.get("text", suggestion.get("question", str(suggestion)))
         else:
             text = str(suggestion)
-        
-        # Usar solo el botón de Streamlit con estilo personalizado via CSS
+
         if st.button(
-            f"○  {text}",
+            text,
             key=f"suggestion_{i}_{hash(text)}",
             type="secondary",
+            use_container_width=True,
         ):
             st.session_state.pending_suggestion = text
             st.rerun()
@@ -807,6 +1007,133 @@ def main():
             [data-testid="stSidebar"] .stCode pre {
                 background-color: #2b2b2b !important;
             }
+            /* =========================================
+                AGENT BRAND (SENTINEL HEADER)
+                ========================================= */
+                .agent-wrap {
+                    margin: 12px 0;
+                }
+
+                .agent-badge {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    margin: 0 0 8px 0;
+                    color: #d0d0d0;
+                    font-size: 12px;
+                    font-weight: 700;
+                    letter-spacing: 0.9px;
+                    text-transform: uppercase;
+                    opacity: 0.95;
+                }
+
+                .agent-badge-icon {
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 8px;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+
+                .agent-badge-icon svg {
+                    width: 16px;
+                    height: 16px;
+                    fill: none;
+                    stroke: #d0d0d0;
+                    stroke-width: 2;
+                }
+
+                .agent-row {
+                    display: flex;
+                    justify-content: flex-start;
+                }
+
+                .agent-bubble {
+                    background: transparent;
+                    border: 0;
+                    border-radius: 0;
+                    padding: 0;
+                    max-width: 78%;
+                    color: #e6e6e6;
+                    word-wrap: break-word;
+                    line-height: 1.55;
+                }
+
+
+                .agent-bubble ul {
+                    margin: 10px 0 0 18px;
+                    padding: 0;
+                }
+
+                .agent-bubble li {
+                    margin: 6px 0;
+                }
+                /* ===== TYPEWRITER MULTILINE (GLOBAL) ===== */
+                @keyframes tw-clip-reveal {
+                from { clip-path: inset(0 100% 0 0); }
+                to   { clip-path: inset(0 0 0 0); }
+                }
+                @keyframes tw-caret-blink {
+                0%, 100% { opacity: 0; }
+                50% { opacity: 1; }
+                }
+
+                .typewriter-multi{
+                display:block;
+                white-space:pre-wrap;
+                overflow:hidden;
+                position:relative;
+
+                clip-path: inset(0 100% 0 0);
+                animation-name: tw-clip-reveal;
+                animation-duration: var(--tw-dur, 0.55s);
+                animation-timing-function: ease;
+                animation-fill-mode: forwards;
+                animation-delay: var(--t-delay, 0s);
+                }
+
+
+
+                /* =========================================
+                FIX: typewriter en timeline (evita saltos raros)
+                ========================================= */
+                .timeline-node.typewriter,
+                .timeline-msg.typewriter{
+                display:inline-block;
+                max-width:100%;
+                overflow:hidden;
+                white-space:nowrap;
+                text-overflow:ellipsis;
+                }
+
+                /* =========================================
+                TYPEWRITER MULTILÍNEA PARA OUTPUT DEL AGENTE
+                (sin pop, sin background, sin borde)
+                ========================================= */
+                @keyframes tw-clip-reveal {
+                from { clip-path: inset(0 100% 0 0); }
+                to   { clip-path: inset(0 0 0 0); }
+                }
+
+                @keyframes tw-caret-blink {
+                0%, 100% { opacity: 0; }
+                50% { opacity: 1; }
+                }
+
+                .typewriter-multi{
+                display:block;
+                white-space:pre-wrap;     /* respeta saltos de línea */
+                overflow:hidden;
+                position:relative;
+
+                clip-path: inset(0 100% 0 0);
+                animation: tw-clip-reveal 0.55s ease forwards;
+                animation-delay: var(--t-delay, 0s);
+                }
+
+
+
             </style>
             """,
             unsafe_allow_html=True
@@ -930,9 +1257,16 @@ def main():
             elif msg_type == "logs_group":
                 with st.expander("Show Sentinel Thoughts", expanded=False):
                     st.markdown(content, unsafe_allow_html=True)
+
+
             elif msg_type == "announcement":
-                with st.chat_message("assistant"):
-                    st.info(content)
+                    if message.get("animate") and not should_skip_typewriter(content):
+                        render_assistant_typed_html(content, "SENTINEL", delay_s=0.0)
+                        message["animate"] = False
+                    else:
+                        render_assistant_markdown(content, "SENTINEL")
+
+
             elif role == "user":
                 st.markdown(f"""
                 <div style="display: flex; justify-content: flex-end; margin: 12px 0;">
@@ -941,9 +1275,16 @@ def main():
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+
             else:
-                st.markdown(content)
-        
+                    if message.get("animate") and not should_skip_typewriter(content):
+                        render_assistant_typed_html(content, "SENTINEL", delay_s=0.0)
+                        message["animate"] = False
+                    else:
+                        render_assistant_markdown(content, "SENTINEL")
+
+
+
         # Mostrar sugerencias después del último mensaje del asistente
         if st.session_state.follow_up_suggestions and not st.session_state.pending_questions:
             render_suggestions(st.session_state.follow_up_suggestions)
@@ -1012,6 +1353,7 @@ def main():
                         "role": "system",
                         "content": logs_html,
                         "type": "logs_group",
+                        "animate": True,
                     })
                 
                 # Extraer sugerencias
@@ -1034,6 +1376,7 @@ def main():
                                 "role": "assistant",
                                 "content": cleaned_msg,
                                 "type": "text",
+                                "animate": True,
                             })
                 
                 st.session_state.pending_questions = []
@@ -1206,6 +1549,7 @@ def main():
                                 "role": "assistant",
                                 "content": cleaned_msg,
                                 "type": "text",
+                                "animate": True,
                             })
                 
                 if final_state:
