@@ -833,6 +833,30 @@ def extract_suggestions_from_events(events: List[Dict]) -> List[str]:
     return suggestions[:3]  # Máximo 3 sugerencias
 
 
+def extract_images_from_events(events: List[Dict]) -> List[Dict[str, Any]]:
+    """Extrae las imágenes relevantes de los eventos del grafo"""
+    images = []
+    node_names = ["tutor", "troubleshooting", "research"]
+    
+    for event in events:
+        if isinstance(event, dict):
+            for node_name in node_names:
+                if node_name in event:
+                    node_data = event[node_name]
+                    if isinstance(node_data, dict):
+                        # Buscar imágenes en worker_outputs
+                        worker_outputs = node_data.get("worker_outputs", [])
+                        for output in worker_outputs:
+                            if isinstance(output, dict):
+                                extra = output.get("extra", {})
+                                if isinstance(extra, dict):
+                                    output_images = extra.get("images", [])
+                                    if output_images:
+                                        images.extend(output_images)
+    
+    return images
+
+
 def extract_questions_from_event(event: Dict) -> List[Dict]:
     """Extrae preguntas estructuradas del evento"""
     if not isinstance(event, dict):
@@ -846,6 +870,29 @@ def extract_questions_from_event(event: Dict) -> List[Dict]:
                 if questions:
                     return questions
     return []
+
+
+def render_images(images: List[Dict[str, Any]]):
+    """Renderiza la imagen mas relevante en el chat"""
+    if not images:
+        return
+
+    # Show only 1 best matching image
+    img = images[0]
+    img_id = img.get("id", "")
+    title = img.get("title", "Technical Image")
+    local_path = img.get("local_path", "")
+
+    try:
+        # First try local file using local_path from metadata
+        if local_path and os.path.exists(local_path):
+            st.image(local_path, caption=title, width="stretch")
+        elif os.path.exists(f"src/assets/images/{img_id}.jpg"):
+            st.image(f"src/assets/images/{img_id}.jpg", caption=title, width="stretch")
+        elif os.path.exists(f"src/assets/images/{img_id}.png"):
+            st.image(f"src/assets/images/{img_id}.png", caption=title, width="stretch")
+    except Exception as e:
+        logger.warning(f"Error displaying image {img_id}: {e}")
 
 
 def render_suggestions(suggestions: List[str]):
@@ -929,7 +976,7 @@ def render_questions_wizard() -> bool:
                 if st.button(
                     label,
                     key=f"opt_{question_id}_{i}",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary" if i == 0 else "secondary"
                 ):
                     st.session_state.question_answers[question_id] = value
@@ -946,7 +993,7 @@ def render_questions_wizard() -> bool:
 
         col1, col2 = st.columns([1, 3])
         with col1:
-            if st.button("Continue", key=f"next_{question_id}", use_container_width=True):
+            if st.button("Continue", key=f"next_{question_id}", width="stretch"):
                 if user_answer:
                     st.session_state.question_answers[question_id] = user_answer
                     st.session_state.current_question_idx += 1
@@ -955,7 +1002,7 @@ def render_questions_wizard() -> bool:
                     st.warning("Please provide an answer before continuing.")
 
         with col2:
-            if st.button("Skip question", key=f"skip_{question_id}", use_container_width=True):
+            if st.button("Skip question", key=f"skip_{question_id}", width="stretch"):
                 st.session_state.question_answers[question_id] = "Not answered"
                 st.session_state.current_question_idx += 1
                 st.rerun()
@@ -1204,7 +1251,7 @@ def main():
         st.caption("Active Thread ID:")
         st.code(st.session_state.thread_id[:20] + "...", language=None)
 
-        if st.button("Reset System State", type="primary", use_container_width=True):
+        if st.button("Reset System State", type="primary", width="stretch"):
             keys_to_reset = [
                 "thread_id", "messages", "window_count", "rolling_summary",
                 "pending_interrupt", "raw_logs", "pending_questions",
@@ -1216,7 +1263,7 @@ def main():
                     del st.session_state[key]
             st.rerun()
 
-        if st.button("Clear Chat History", use_container_width=True):
+        if st.button("Clear Chat History", width="stretch"):
             st.session_state.messages = []
             st.session_state.pending_questions = []
             st.session_state.pending_content = ""
@@ -1267,6 +1314,10 @@ def main():
                         render_assistant_markdown(content, "SENTINEL")
 
 
+            elif msg_type == "images":
+                # Render images
+                if isinstance(content, list):
+                    render_images(content)
             elif role == "user":
                 st.markdown(f"""
                 <div style="display: flex; justify-content: flex-end; margin: 12px 0;">
@@ -1367,6 +1418,9 @@ def main():
                     ]
                 st.session_state.follow_up_suggestions = suggestions
                 
+                # Extraer imágenes
+                images = extract_images_from_events(all_graph_events)
+                
                 messages, _ = extract_messages_from_events(all_graph_events)
                 for msg in messages:
                     if msg:
@@ -1376,7 +1430,6 @@ def main():
                                 "role": "assistant",
                                 "content": cleaned_msg,
                                 "type": "text",
-                                "animate": True,
                             })
                 
                 st.session_state.pending_questions = []
@@ -1540,6 +1593,9 @@ def main():
                 suggestions = extract_suggestions_from_events(all_graph_events)
                 st.session_state.follow_up_suggestions = suggestions
                 
+                # Extraer imágenes
+                images = extract_images_from_events(all_graph_events)
+
                 messages, final_state = extract_messages_from_events(all_graph_events)
                 for msg in messages:
                     if msg:
@@ -1552,9 +1608,13 @@ def main():
                                 "animate": True,
                             })
                 
-                if final_state:
-                    st.session_state.window_count = final_state.get("window_count", st.session_state.window_count)
-                    st.session_state.rolling_summary = final_state.get("rolling_summary", st.session_state.rolling_summary)
+                # Agregar imágenes como mensaje separado
+                if images:
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": images,
+                        "type": "images",
+                    })
             
             st.session_state.is_loading = False
             logger.info("Procesamiento completado")
