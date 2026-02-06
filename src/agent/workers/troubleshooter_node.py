@@ -6,6 +6,7 @@ CAPACIDADES:
 2. Integración con laboratorio ATLAS (consulta estado real de equipos)
 3. Preguntas estructuradas con opciones del lab real
 4. Ejecución de acciones (cambiar modo cobot, etc.)
+5. Conocimiento base del laboratorio (robots, estaciones, terminología)
 """
 import os
 import json
@@ -22,12 +23,95 @@ from src.agent.contracts.question_schema import (
     QuestionSet,
     ClarificationQuestion,
     QuestionOption,
+    QuestionType,
+    QuickReply,
     TROUBLESHOOTING_QUESTIONS,
     create_choice_question,
     create_text_question,
+    create_boolean_question,
+    create_wizard,
+    create_quick_form,
+    get_troubleshooting_questions,
+    get_repair_confirmation_wizard,
 )
 from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report, event_error
+
+
+def extract_suggestions_from_text(text: str) -> tuple[str, list[str]]:
+    """
+    Extrae las sugerencias del texto de respuesta del LLM.
+    
+    Returns:
+        (content_without_suggestions, list_of_suggestions)
+    """
+    suggestions = []
+    content = text
+    
+    if "---SUGGESTIONS---" in text and "---END_SUGGESTIONS---" in text:
+        parts = text.split("---SUGGESTIONS---")
+        content = parts[0].strip()
+        
+        if len(parts) > 1:
+            suggestions_block = parts[1].split("---END_SUGGESTIONS---")[0]
+            for line in suggestions_block.strip().split("\n"):
+                line = line.strip()
+                if line and (line[0].isdigit() or line.startswith("-")):
+                    clean_line = line.lstrip("0123456789.-) ").strip()
+                    if clean_line:
+                        suggestions.append(clean_line)
+    
+    return content, suggestions[:3]
+
+
+# Importar conocimiento del laboratorio
+try:
+    from src.agent.knowledge import (
+        get_lab_knowledge_summary,
+        get_robot_info,
+        get_station_info,
+        get_terminology_definition,
+        get_error_solution,
+        TERMINOLOGY,
+        ROBOTS,
+        COMMON_ERRORS,
+    )
+    LAB_KNOWLEDGE_AVAILABLE = True
+except ImportError:
+    LAB_KNOWLEDGE_AVAILABLE = False
+
+
+def get_knowledge_context(user_message: str) -> str:
+    """
+    Obtiene contexto de conocimiento relevante basado en el mensaje del usuario.
+    Busca términos, robots, estaciones mencionadas.
+    """
+    if not LAB_KNOWLEDGE_AVAILABLE:
+        return ""
+    
+    context_parts = []
+    msg_lower = user_message.lower()
+    
+    # Buscar robots mencionados
+    for robot_name in ROBOTS.keys():
+        if robot_name.lower() in msg_lower:
+            context_parts.append(get_robot_info(robot_name))
+    
+    # Buscar estaciones mencionadas
+    for i in range(1, 7):
+        if f"estacion {i}" in msg_lower or f"estación {i}" in msg_lower or f"est {i}" in msg_lower:
+            context_parts.append(get_station_info(i))
+    
+    # Buscar códigos de error
+    for error_code in COMMON_ERRORS.keys():
+        if error_code.lower() in msg_lower:
+            context_parts.append(get_error_solution(error_code))
+    
+    # Si no encontró nada específico, dar resumen general
+    if not context_parts:
+        context_parts.append(get_lab_knowledge_summary())
+    
+    return "\n\n".join(context_parts)
 
 
 # ============================================
@@ -60,7 +144,7 @@ Genera 1-3 preguntas de clarificación que te ayuden a entender mejor lo que el 
   "questions": [
     {{
       "id": "q1",
-      "question": "¿Cuál es el problema específico?",
+      "question": "What is the specific problem?",
       "type": "choice",
       "options": [
         {{"id": "1", "label": "Opción 1", "description": "Descripción opcional"}},
@@ -69,7 +153,7 @@ Genera 1-3 preguntas de clarificación que te ayuden a entender mejor lo que el 
     }},
     {{
       "id": "q2", 
-      "question": "¿Cuál es el mensaje de error?",
+      "question": "What is the error message?",
       "type": "text"
     }}
   ]
@@ -169,7 +253,7 @@ def generate_dynamic_questions(
                     question=q_data.get("question", ""),
                     type="boolean",
                     options=[
-                        QuestionOption(id="yes", label="Sí"),
+                        QuestionOption(id="yes", label="Yes"),
                         QuestionOption(id="no", label="No"),
                     ]
                 ))
@@ -233,7 +317,10 @@ except ImportError:
 
 TROUBLESHOOTER_PROMPT = """Eres un **Experto en Diagnóstico Técnico** del Laboratorio ATLAS.
 
-## CONTEXTO DEL LABORATORIO
+## CONOCIMIENTO DEL LABORATORIO
+{knowledge_context}
+
+## ESTADO ACTUAL DEL LABORATORIO
 {lab_context}
 
 ## EQUIPOS DEL LABORATORIO
@@ -242,7 +329,9 @@ El laboratorio ATLAS tiene 6 estaciones de trabajo. Cada estación incluye:
 - 1 Cobot (Universal Robots / FANUC)
 - Sensores de seguridad (puerta, E-stop)
 
-**Protocolo de seguridad:** El cobot NO puede ejecutar rutinas si:
+**Robot principal: ALFREDO** - Cobot UR5e en Estación 1, usado para ensamblaje inicial.
+
+**Protocolo de seguridad:** El cobot NO puede execute routines si:
 - La puerta de seguridad está ABIERTA
 - La PLC no está conectada o en STOP
 - Hay errores activos sin resolver
@@ -285,6 +374,9 @@ TROUBLESHOOTER_PROMPT_SIMPLE = """Eres un **Experto en Diagnóstico Técnico** e
 - Cobots y robótica industrial
 - Sistemas de control
 
+## CONOCIMIENTO BASE
+{knowledge_context}
+
 ## INFORMACIÓN DEL USUARIO
 {clarification_section}
 
@@ -324,9 +416,25 @@ def is_lab_related(message: str) -> bool:
         "puerta", "door", "interlock",
         "rutina", "routine",
         # Acciones del lab
-        "iniciar cobot", "parar cobot", "estado del lab",
+        "start cobot", "stop cobot", "lab status",
         "checar", "verificar estado",
+        # Robots específicos
+        "alfredo", "ur5", "ur10", "universal robots",
+        # Estaciones por nombre
+        "ensamblaje", "soldadura", "inspección", "inspeccion", "testing", "empaque",
+        # Terminología técnica del lab
+        "profinet", "tia portal", "polyscope", "teach pendant",
+        "oee", "tiempo de ciclo", "celda",
     ]
+    
+    # Agregar nombres de robots del conocimiento si está disponible
+    if LAB_KNOWLEDGE_AVAILABLE:
+        try:
+            for robot_name in ROBOTS.keys():
+                if robot_name.lower() not in lab_keywords:
+                    lab_keywords.append(robot_name.lower())
+        except:
+            pass
     
     return any(kw in msg for kw in lab_keywords)
 
@@ -357,7 +465,7 @@ def detect_equipment_type(message: str) -> Optional[str]:
     
     if any(kw in msg for kw in ["plc", "s7", "siemens", "allen"]):
         return "plc"
-    if any(kw in msg for kw in ["cobot", "robot", "ur5", "ur10", "fanuc", "brazo"]):
+    if any(kw in msg for kw in ["cobot", "robot", "ur5", "ur10", "fanuc", "brazo", "alfredo"]):
         return "cobot"
     if any(kw in msg for kw in ["sensor", "puerta", "door", "proximidad", "e-stop"]):
         return "sensor"
@@ -371,7 +479,7 @@ def detect_action_request(message: str) -> Optional[Dict]:
     
     # Iniciar cobot / rutina
     start_phrases = [
-        "iniciar cobot", "arrancar cobot", "ejecutar rutina", "start cobot", "correr rutina",
+        "start cobot", "start cobot", "execute routine", "start cobot", "run routine",
         "comienza rutina", "comenzar rutina", "inicia rutina", "iniciar rutina",
         "arranca rutina", "corre rutina", "run routine", "start routine",
         "enciende cobot", "activa cobot", "activa rutina"
@@ -390,7 +498,7 @@ def detect_action_request(message: str) -> Optional[Dict]:
     
     # Parar cobot
     stop_phrases = [
-        "parar cobot", "detener cobot", "stop cobot", "parar rutina",
+        "stop cobot", "detener cobot", "stop cobot", "parar rutina",
         "para cobot", "para rutina", "detén cobot", "deten cobot",
         "apagar cobot", "apaga cobot", "stop routine",
         "apaga la rutina", "apagar rutina", "apaga rutina",
@@ -420,7 +528,7 @@ def detect_action_request(message: str) -> Optional[Dict]:
     if any(phrase in msg for phrase in door_phrases):
         return {"action": "close_doors"}
     
-    # Reconectar PLC
+    # Reconnect PLC
     reconnect_phrases = [
         "reconectar plc", "reconecta la plc", "reconnect plc",
         "reiniciar plc", "reinicia la plc"
@@ -452,7 +560,7 @@ def detect_action_request(message: str) -> Optional[Dict]:
     
     # Ver estado general del lab
     status_phrases = [
-        "estado del lab", "resumen del lab", "ver laboratorio", "lab status",
+        "lab status", "resumen del lab", "ver laboratorio", "lab status",
         "estado laboratorio", "status lab", "como está el lab", "como esta el lab",
         "estado de las estaciones", "ver estaciones", "mostrar estaciones"
     ]
@@ -463,7 +571,7 @@ def detect_action_request(message: str) -> Optional[Dict]:
 
 
 def detect_query_request(message: str) -> Optional[Dict]:
-    """Detecta si el usuario está haciendo una consulta sobre el estado del lab"""
+    """Detecta si el usuario está haciendo una consulta sobre el lab status"""
     msg = message.lower()
     
     # Consulta sobre errores
@@ -525,7 +633,7 @@ def get_lab_context() -> str:
         # Obtener resumen del lab
         overview = get_lab_overview()
         if not overview.get("success"):
-            return "⚠️ No se pudo obtener estado del laboratorio."
+            return "⚠️ No se pudo obtener lab statusoratorio."
         
         lines = ["### Estado Actual del Laboratorio\n"]
         lines.append(f"- **Estaciones activas:** {overview['stations_online']}/{overview['total_stations']}")
@@ -598,7 +706,7 @@ def create_lab_questions(
             
             questions.append(create_choice_question(
                 "plc_selection",
-                "¿Con cuál PLC del laboratorio tienes el problema?",
+                "Which PLC in the laboratory is having the issue?",
                 plc_options,
                 include_other=True
             ))
@@ -619,7 +727,7 @@ def create_lab_questions(
             
             questions.append(create_choice_question(
                 "cobot_selection",
-                "¿Con cuál cobot tienes el problema?",
+                "Which cobot is having the issue?",
                 cobot_options,
                 include_other=True
             ))
@@ -628,14 +736,14 @@ def create_lab_questions(
     elif station_number is None and is_lab_related(message):
         questions.append(create_choice_question(
             "station_selection",
-            "¿En cuál estación del laboratorio ocurre el problema?",
+            "At which laboratory station is the problem occurring?",
             [
-                ("1", "Estación 1 - Ensamblaje Inicial"),
-                ("2", "Estación 2 - Soldadura"),
-                ("3", "Estación 3 - Inspección Visual"),
-                ("4", "Estación 4 - Ensamblaje Final"),
-                ("5", "Estación 5 - Testing"),
-                ("6", "Estación 6 - Empaque"),
+                ("1", "Station 1 - Initial Assembly"),
+                ("2", "Station 2 - Welding"),
+                ("3", "Station 3 - Visual Inspection"),
+                ("4", "Station 4 - Final Assembly"),
+                ("5", "Station 5 - Testing"),
+                ("6", "Station 6 - Packaging"),
             ],
             include_other=False
         ))
@@ -644,12 +752,12 @@ def create_lab_questions(
     if len(questions) < 3 and not any(kw in message.lower() for kw in ["no conecta", "error", "stop", "falla"]):
         questions.append(create_choice_question(
             "error_type",
-            "¿Qué tipo de problema observas?",
+            "What type of problem are you observing?",
             [
-                ("1", "No conecta / Timeout", "El equipo no responde"),
-                ("2", "En modo STOP / Error", "El equipo muestra error"),
-                ("3", "Puerta abierta / Interlock", "Problema de seguridad"),
-                ("4", "No ejecuta rutina", "Cobot no inicia"),
+                ("1", "Not connecting / Timeout", "Equipment not responding"),
+                ("2", "In STOP mode / Error", "Equipment showing error"),
+                ("3", "Door open / Interlock", "Safety issue"),
+                ("4", "Not executing routine", "Cobot not starting"),
                 ("5", "Comportamiento extraño", "Funciona pero mal"),
             ],
             include_other=True
@@ -663,6 +771,179 @@ def create_lab_questions(
         )
     
     return None
+
+
+# ============================================
+# CHEQUEO DE SEGURIDAD
+# ============================================
+
+def perform_safety_check(station_number: int) -> Dict[str, Any]:
+    """
+    Realiza un chequeo de seguridad completo de una estación antes de ejecutar acciones.
+    
+    Returns:
+        Dict con resultado del chequeo, incluyendo:
+        - safe: bool indicando si es seguro proceder
+        - checks: lista de verificaciones realizadas
+        - warnings: lista de advertencias
+        - blockers: lista de problemas que impiden la operación
+    """
+    if not LAB_TOOLS_AVAILABLE:
+        return {
+            "safe": False,
+            "checks": [],
+            "warnings": [],
+            "blockers": ["❌ Sistema de laboratorio no disponible"]
+        }
+    
+    checks = []
+    warnings = []
+    blockers = []
+    
+    try:
+        # 1. Obtener estado de la estación
+        station_details = get_station_details(station_number)
+        
+        if not station_details.get("success"):
+            return {
+                "safe": False,
+                "checks": [],
+                "warnings": [],
+                "blockers": [f"❌ No se pudo obtener estado de estación {station_number}"]
+            }
+        
+        # 2. Verificar PLC
+        plc_info = station_details.get("plc", {})
+        if plc_info.get("is_connected"):
+            checks.append(f"✅ PLC conectada ({plc_info.get('name', 'N/A')})")
+            if plc_info.get("run_mode") == "RUN":
+                checks.append("✅ PLC en modo RUN")
+            else:
+                warnings.append(f"⚠️ PLC en modo {plc_info.get('run_mode', 'UNKNOWN')} (no RUN)")
+        else:
+            blockers.append(f"❌ PLC desconectada - {plc_info.get('ip_address', 'IP desconocida')}")
+        
+        # 3. Verificar Cobot
+        cobot_info = station_details.get("cobot", {})
+        if cobot_info.get("is_connected"):
+            checks.append(f"✅ Cobot conectado ({cobot_info.get('name', 'N/A')})")
+            cobot_status = cobot_info.get("status", "unknown")
+            if cobot_status == "error":
+                blockers.append(f"❌ Cobot en estado de ERROR")
+            elif cobot_status == "busy":
+                warnings.append("⚠️ Cobot ocupado ejecutando otra rutina")
+        else:
+            blockers.append("❌ Cobot no conectado")
+        
+        # 4. Verificar sensores de seguridad (puertas)
+        sensors = station_details.get("sensors", [])
+        door_sensor = next((s for s in sensors if "door" in s.get("name", "").lower()), None)
+        
+        if door_sensor:
+            # 'triggered' = True significa puerta cerrada (sensor activado)
+            is_door_closed = door_sensor.get("triggered", False) or door_sensor.get("is_closed", False)
+            if is_door_closed:
+                checks.append("✅ Puerta de seguridad cerrada")
+            else:
+                blockers.append("❌ Puerta de seguridad ABIERTA - Cerrar antes de operar")
+        else:
+            # Si no hay sensor de puerta, asumimos que está OK (no es un blocker)
+            checks.append("✅ Estación sin sensor de puerta (OK)")
+        
+        # 5. Verificar E-Stop
+        estop_sensor = next((s for s in sensors if "stop" in s.get("name", "").lower()), None)
+        if estop_sensor:
+            # triggered=True o value=1 significa E-Stop presionado (malo)
+            is_estop_pressed = estop_sensor.get("triggered", False) or estop_sensor.get("value") == 1
+            if not is_estop_pressed:
+                checks.append("✅ E-Stop no activado")
+            else:
+                blockers.append("❌ E-Stop ACTIVADO - Liberar antes de operar")
+        else:
+            # Sin sensor de E-Stop no es un blocker
+            checks.append("✅ Estación sin E-Stop dedicado (OK)")
+        
+        # 6. Verificar errores activos
+        active_errors = station_details.get("active_errors", [])
+        if active_errors:
+            for err in active_errors:
+                severity = err.get("severity", "error")
+                if severity in ["critical", "error"]:
+                    blockers.append(f"❌ Error activo: {err.get('message', 'Error desconocido')}")
+                else:
+                    warnings.append(f"⚠️ Advertencia: {err.get('message', 'Advertencia')}")
+        else:
+            checks.append("✅ Sin errores activos")
+        
+        # 7. Verificar si está lista para operar
+        ready = station_details.get("ready_to_operate", False)
+        if ready:
+            checks.append("✅ Estación lista para operar")
+        
+        # Determinar si es seguro
+        is_safe = len(blockers) == 0
+        
+        return {
+            "safe": is_safe,
+            "checks": checks,
+            "warnings": warnings,
+            "blockers": blockers,
+            "station_details": station_details
+        }
+        
+    except Exception as e:
+        logger.error("troubleshooter_node", f"Error en chequeo de seguridad: {e}")
+        return {
+            "safe": False,
+            "checks": [],
+            "warnings": [],
+            "blockers": [f"❌ Error en chequeo de seguridad: {str(e)}"]
+        }
+
+
+def format_safety_check_report(station_number: int, safety_result: Dict, action_description: str) -> str:
+    """Formatea el reporte de chequeo de seguridad para mostrar al usuario."""
+    
+    lines = [
+        f"## 🔒 Chequeo de Seguridad - Estación {station_number}",
+        f"**Acción solicitada:** {action_description}",
+        "",
+        "### Verificaciones realizadas:",
+        ""
+    ]
+    
+    # Checks exitosos
+    for check in safety_result.get("checks", []):
+        lines.append(check)
+    
+    # Warnings
+    if safety_result.get("warnings"):
+        lines.append("")
+        lines.append("### ⚠️ Advertencias:")
+        for warning in safety_result["warnings"]:
+            lines.append(warning)
+    
+    # Blockers
+    if safety_result.get("blockers"):
+        lines.append("")
+        lines.append("### 🚫 Problemas que impiden la operación:")
+        for blocker in safety_result["blockers"]:
+            lines.append(blocker)
+    
+    # Resultado final
+    lines.append("")
+    if safety_result.get("safe"):
+        lines.append("---")
+        lines.append("### ✅ Safety Check: PASSED")
+        lines.append("")
+        lines.append("The station is ready to execute the action.")
+    else:
+        lines.append("---")
+        lines.append("### ❌ Safety Check: NOT PASSED")
+        lines.append("")
+        lines.append("Resuelve los problemas indicados antes de continuar.")
+    
+    return "\n".join(lines)
 
 
 # ============================================
@@ -702,7 +983,7 @@ def execute_lab_action(action: Dict, user_name: str = "agent") -> Dict[str, Any]
         
         # Construir mensaje detallado
         if result.get("success"):
-            content = result.get("message", f"✅ Cobot configurado en modo {mode}")
+            content = result.get("message", f"✅ Cobot configured in mode {mode}")
         else:
             # Incluir razones del fallo
             error_msg = result.get("error", "Error desconocido")
@@ -799,12 +1080,12 @@ def execute_lab_action(action: Dict, user_name: str = "agent") -> Dict[str, Any]
             
             if action_name == "close_all_doors":
                 r = close_all_doors()
-                results.append(f"{'✅' if r.get('success') else '❌'} Cerrar puertas: {r.get('message', r.get('error'))}")
+                results.append(f"{'✅' if r.get('success') else '❌'} Close doors: {r.get('message', r.get('error'))}")
             
             elif action_name == "reconnect_plc":
                 st = suggested.get("station")
                 r = reconnect_plc(st)
-                results.append(f"{'✅' if r.get('success') else '❌'} Reconectar PLC est.{st}: {r.get('message', r.get('error'))}")
+                results.append(f"{'✅' if r.get('success') else '❌'} Reconnect PLC est.{st}: {r.get('message', r.get('error'))}")
             
             elif action_name == "resolve_errors" or action_name == "resolve_all_errors":
                 st = suggested.get("station")
@@ -822,7 +1103,7 @@ def execute_lab_action(action: Dict, user_name: str = "agent") -> Dict[str, Any]
 **Acciones ejecutadas:**
 {chr(10).join(results)}
 
-¿Quieres que verifique el estado actual del laboratorio?"""
+Do you want me to check the current laboratory status?"""
         
         return {
             "success": True,
@@ -835,7 +1116,7 @@ def execute_lab_action(action: Dict, user_name: str = "agent") -> Dict[str, Any]
 
 
 def execute_lab_query(query: Dict) -> Dict[str, Any]:
-    """Ejecuta una consulta de estado del laboratorio - respuestas conversacionales"""
+    """Ejecuta una consulta de lab statusoratorio - respuestas conversacionales"""
     if not LAB_TOOLS_AVAILABLE:
         return {"success": False, "error": "Lab tools no disponibles"}
     
@@ -898,7 +1179,7 @@ def execute_lab_query(query: Dict) -> Dict[str, Any]:
         
         # Construir respuesta conversacional
         if total_problems == 0:
-            content = "¡Buenas noticias! 🎉 **No hay problemas activos en el laboratorio.**\n\nTodas las estaciones están operando normalmente. ¿Necesitas algo más?"
+            content = "¡Buenas noticias! 🎉 **No hay problemas activos en el laboratorio.**\n\nTodas las estaciones están operando normalmente. Do you need anything else?"
             offer_help = False
         else:
             # Introducción conversacional
@@ -1148,7 +1429,88 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
     logger.info("troubleshooter_node", f"Mensaje: '{user_message[:50]}...' | is_lab={is_lab} | station={station_num} | action={action_request} | query={query_request}")
     
     # ==========================================
-    # 2.5. VERIFICAR SI ES CONFIRMACIÓN DE REPARACIÓN
+    # 2.5. VERIFICAR SI ES CONFIRMACIÓN DE ACCIÓN DE COBOT
+    # ==========================================
+    if pending_context.get("awaiting_cobot_confirmation"):
+        user_response = (clarification_text or user_message).lower().strip()
+        
+        # Respuestas afirmativas
+        affirmative = any(word in user_response for word in [
+            "yes", "sí", "si", "confirmo", "confirmar", "dale", "ok", 
+            "adelante", "procede", "hazlo", "ejecutar", "ejecuta",
+            "1", "confirm", "iniciar", "inicia"
+        ])
+        
+        if affirmative:
+            # Recuperar la acción guardada
+            saved_action = pending_context.get("saved_cobot_action", {})
+            station_num = saved_action.get("station")
+            mode = saved_action.get("mode", 1)
+            action_type = saved_action.get("action", "start_cobot")
+            
+            logger.info("troubleshooter_node", f"Usuario confirmó acción de cobot: {action_type} en estación {station_num}")
+            events.append(event_report("troubleshooting", f"✅ Confirmación recibida - Ejecutando acción en estación {station_num}..."))
+            
+            # Ejecutar la acción
+            result = execute_lab_action(saved_action, state.get("user_name", "user"))
+            
+            if result.get("success"):
+                action_desc = "Cobot started" if action_type == "start_cobot" else "Cobot detenido"
+                content = f"""## ✅ Action Executed Successfully
+
+**Station:** {station_num}
+**Action:** {action_desc}
+**Mode:** {mode if action_type == "start_cobot" else "Detenido"}
+
+{result.get("content", "")}
+
+Do you need anything else?"""
+                
+                output = WorkerOutputBuilder.troubleshooting(
+                    content=content,
+                    problem_identified=f"Acción ejecutada: {action_desc}",
+                    severity="low",
+                    summary=f"{action_desc} en estación {station_num}",
+                    confidence=1.0,
+                )
+                events.append(event_report("troubleshooting", f"✅ {action_desc} correctamente"))
+            else:
+                output = WorkerOutputBuilder.troubleshooting(
+                    content=result.get("content") or f"❌ Error: {result.get('error')}",
+                    problem_identified="Error en acción de cobot",
+                    severity="medium",
+                    summary="No se pudo ejecutar la acción",
+                    confidence=0.5,
+                )
+                events.append(event_error("troubleshooting", result.get("error", "Error desconocido")))
+            
+            # Limpiar contexto
+            return {
+                "worker_outputs": [output.model_dump()],
+                "troubleshooting_result": output.model_dump_json(),
+                "events": events,
+                "pending_context": {},
+            }
+        else:
+            # Usuario canceló
+            logger.info("troubleshooter_node", "Usuario canceló acción de cobot")
+            output = WorkerOutputBuilder.troubleshooting(
+                content="❌ **Acción cancelada**\n\nNo se realizó ningún cambio. Do you need anything else?",
+                problem_identified="Acción cancelada por usuario",
+                severity="low",
+                summary="Usuario canceló la acción",
+                confidence=1.0,
+            )
+            
+            return {
+                "worker_outputs": [output.model_dump()],
+                "troubleshooting_result": output.model_dump_json(),
+                "events": events,
+                "pending_context": {},
+            }
+    
+    # ==========================================
+    # 2.6. VERIFICAR SI ES CONFIRMACIÓN DE REPARACIÓN
     # ==========================================
     if pending_context.get("awaiting_repair_confirmation"):
         # Verificar respuesta del usuario
@@ -1196,7 +1558,7 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
             # Usuario dijo que no
             logger.info("troubleshooter_node", "Usuario rechazó reparación")
             output = WorkerOutputBuilder.troubleshooting(
-                content="Entendido, no realizaré cambios. ¿Necesitas algo más?",
+                content="Entendido, no realizaré cambios. Do you need anything else?",
                 problem_identified="Reparación cancelada por usuario",
                 severity="low",
                 summary="Usuario rechazó reparación",
@@ -1211,7 +1573,198 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
             }
     
     # ==========================================
-    # 3. EJECUTAR ACCIÓN SI SE SOLICITA
+    # 3. ACCIONES DE COBOT - REQUIEREN CHEQUEO DE SEGURIDAD Y CONFIRMACIÓN
+    # ==========================================
+    if action_request and action_request.get("action") in ["start_cobot", "stop_cobot"]:
+        action_type = action_request["action"]
+        station = action_request.get("station")
+        mode = action_request.get("mode", 1 if action_type == "start_cobot" else 0)
+        
+        # Verificar que tenemos estación
+        if station is None:
+            # Pedir estación via HITL
+            question_set = create_choice_question(
+                "station_selection",
+                "At which station do you want to execute this action?",
+                [
+                    ("1", "Estación 1", "Ensamblaje Inicial"),
+                    ("2", "Estación 2", "Soldadura"),
+                    ("3", "Estación 3", "Inspección Visual"),
+                    ("4", "Estación 4", "Ensamblaje Final"),
+                    ("5", "Estación 5", "Testing"),
+                    ("6", "Estación 6", "Empaque"),
+                ],
+            )
+            
+            wizard = create_wizard(
+                worker="troubleshooting",
+                title="🏭 Selección de Estación",
+                questions=[question_set],
+                context="Necesito saber en qué estación ejecutar la acción:",
+            )
+            
+            updated_context = pending_context.copy()
+            updated_context["original_query"] = user_message
+            updated_context["pending_cobot_action"] = action_type
+            updated_context["pending_cobot_mode"] = mode
+            updated_context["question_set"] = wizard.model_dump_json()
+            updated_context["current_worker"] = "troubleshooting"
+            
+            output = WorkerOutputBuilder.troubleshooting(
+                content=wizard.to_display_text(current_step=0),
+                problem_identified="Selección de estación requerida",
+                severity="pending",
+                summary="Esperando selección de estación",
+                confidence=0.0,
+                status="needs_context"
+            )
+            
+            output_dict = output.model_dump()
+            output_dict["status"] = "needs_context"
+            output_dict["clarification_questions"] = wizard.to_dict_list()
+            
+            return {
+                "worker_outputs": [output_dict],
+                "troubleshooting_result": json.dumps(output_dict),
+                "needs_human_input": True,
+                "clarification_questions": wizard.to_dict_list(),
+                "pending_context": updated_context,
+                "events": events,
+            }
+        
+        # Tenemos estación - realizar chequeo de seguridad
+        events.append(event_report("troubleshooting", f"🔒 Realizando chequeo de seguridad en estación {station}..."))
+        logger.info("troubleshooter_node", f"Iniciando chequeo de seguridad para estación {station}")
+        
+        safety_result = perform_safety_check(station)
+        
+        # Action description
+        if action_type == "start_cobot":
+            action_description = f"Start Cobot in mode/routine {mode}"
+        else:
+            action_description = "Stop Cobot"
+        
+        # Formatear reporte de seguridad
+        safety_report = format_safety_check_report(station, safety_result, action_description)
+        
+        events.append(event_report("troubleshooting", 
+            f"{'✅' if safety_result['safe'] else '❌'} Safety check completed"))
+        
+        if safety_result.get("safe"):
+            # Check passed - requesting confirmation
+            confirm_question = create_boolean_question(
+                "confirm_action",
+                f"Do you confirm you want to {action_description.lower()} at station {station}?",
+                help_text="This action will start the cobot movement. Make sure the area is clear."
+            )
+            
+            wizard = create_wizard(
+                worker="troubleshooting",
+                title="⚠️ Action Confirmation",
+                questions=[confirm_question],
+                context="Safety check passed. Please confirm the action:",
+                completion_message="Processing request...",
+            )
+            
+            # Contenido completo: reporte + pregunta de confirmación
+            full_content = safety_report
+            
+            updated_context = pending_context.copy()
+            updated_context["awaiting_cobot_confirmation"] = True
+            updated_context["saved_cobot_action"] = {
+                "action": action_type,
+                "station": station,
+                "mode": mode
+            }
+            updated_context["safety_report"] = safety_report
+            updated_context["question_set"] = wizard.model_dump_json()
+            updated_context["current_worker"] = "troubleshooting"
+            
+            output = WorkerOutputBuilder.troubleshooting(
+                content=full_content,
+                problem_identified=f"Safety check passed - Awaiting confirmation",
+                severity="pending",
+                summary=f"Confirmar: {action_description}",
+                confidence=0.9,
+                status="needs_context"
+            )
+            
+            output_dict = output.model_dump()
+            output_dict["status"] = "needs_context"
+            output_dict["clarification_questions"] = wizard.to_dict_list()
+            
+            return {
+                "worker_outputs": [output_dict],
+                "troubleshooting_result": json.dumps(output_dict),
+                "needs_human_input": True,
+                "clarification_questions": wizard.to_dict_list(),
+                "pending_context": updated_context,
+                "events": events,
+            }
+        else:
+            # Check NOT passed - showing issues
+            full_content = safety_report + """
+
+---
+### 🛠️ What can I do?
+
+I can try to resolve some issues automatically:
+- Close open doors
+- Reconnect disconnected PLCs
+- Clear non-critical errors
+
+Do you want me to try to fix the issues found?"""
+            
+            # Ofrecer reparación automática
+            repair_question = create_boolean_question(
+                "auto_repair",
+                "Do you want me to try to repair the problems automatically?",
+                help_text="I will try to close doors, reconnect equipment, and clear errors."
+            )
+            
+            wizard = create_wizard(
+                worker="troubleshooting",
+                title="🔧 Automatic Repair",
+                questions=[repair_question],
+                context="Safety check found issues:",
+            )
+            
+            updated_context = pending_context.copy()
+            updated_context["awaiting_repair_confirmation"] = True
+            updated_context["failed_safety_check"] = True
+            updated_context["target_station"] = station
+            updated_context["original_cobot_action"] = {
+                "action": action_type,
+                "station": station,
+                "mode": mode
+            }
+            updated_context["question_set"] = wizard.model_dump_json()
+            updated_context["current_worker"] = "troubleshooting"
+            
+            output = WorkerOutputBuilder.troubleshooting(
+                content=full_content,
+                problem_identified=f"Safety check failed - {len(safety_result.get('blockers', []))} blockers",
+                severity="high",
+                summary="Problemas de seguridad detectados",
+                confidence=0.9,
+                status="needs_context"
+            )
+            
+            output_dict = output.model_dump()
+            output_dict["status"] = "needs_context"
+            output_dict["clarification_questions"] = wizard.to_dict_list()
+            
+            return {
+                "worker_outputs": [output_dict],
+                "troubleshooting_result": json.dumps(output_dict),
+                "needs_human_input": True,
+                "clarification_questions": wizard.to_dict_list(),
+                "pending_context": updated_context,
+                "events": events,
+            }
+    
+    # ==========================================
+    # 3.5. OTRAS ACCIONES (no requieren confirmación de seguridad)
     # ==========================================
     if action_request and not action_request.get("needs_clarification"):
         events.append(event_report("troubleshooting", f"🔧 Ejecutando acción: {action_request['action']}"))
@@ -1267,9 +1820,9 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
                 # Crear pregunta de confirmación
                 confirmation_question = create_choice_question(
                     "repair_confirmation",
-                    "¿Quieres que intente reparar estos problemas automáticamente?",
+                    "Do you want me to try to repair these problems automatically?",
                     [
-                        ("yes", "Sí, arréglalo", "Ejecutar reparación automática"),
+                        ("yes", "Yes, fix it", "Execute automatic repair"),
                         ("no", "No, solo quería ver el estado", "No hacer cambios"),
                     ],
                     include_other=False
@@ -1380,7 +1933,7 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
 **Algunos comandos que puedo ejecutar:**
 {chr(10).join(suggestions)}
 
-¿Podrías reformular tu solicitud?"""
+Could you please rephrase your request?"""
         
         output = WorkerOutputBuilder.troubleshooting(
             content=content,
@@ -1448,7 +2001,7 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
                 questions=[
                     create_text_question(
                         "more_details",
-                        "¿Podrías darme más detalles sobre tu consulta?",
+                        "Could you give me more details about your query?",
                         "Describe el problema o lo que necesitas..."
                     )
                 ],
@@ -1462,6 +2015,9 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
             updated_context["is_lab_related"] = is_lab
             updated_context["detected_station"] = station_num
             updated_context["detected_equipment"] = equipment
+            # Guardar question_set completo para el human_input
+            updated_context["question_set"] = question_set.model_dump_json()
+            updated_context["current_worker"] = "troubleshooting"
             
             output = WorkerOutputBuilder.troubleshooting(
                 content=question_set.to_display_text(),
@@ -1473,11 +2029,16 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
             )
             
             questions_data = question_set.to_dict_list()
-            events.append(event_report("troubleshooting", f"📋 {len(questions_data)} preguntas generadas"))
+            
+            # IMPORTANTE: Añadir preguntas al worker_output para que orchestrator las encuentre
+            output_dict = output.model_dump()
+            output_dict["clarification_questions"] = questions_data
+            
+            events.append(event_report("troubleshooting", f"📋 {len(questions_data)} preguntas (wizard)"))
             
             return {
-                "worker_outputs": [output.model_dump()],
-                "troubleshooting_result": output.model_dump_json(),
+                "worker_outputs": [output_dict],  # Ahora incluye clarification_questions
+                "troubleshooting_result": json.dumps(output_dict),
                 "needs_human_input": True,
                 "clarification_questions": questions_data,
                 "pending_context": updated_context,
@@ -1491,7 +2052,7 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
     station_details = None
     
     if is_lab and LAB_TOOLS_AVAILABLE:
-        events.append(event_report("troubleshooting", "🔍 Consultando estado del laboratorio..."))
+        events.append(event_report("troubleshooting", "🔍 Consultando lab statusoratorio..."))
         
         # Obtener contexto general
         lab_context = get_lab_context()
@@ -1532,8 +2093,17 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
         }
     
     # Seleccionar prompt según contexto
+    # Obtener conocimiento relevante
+    knowledge_context = ""
+    if LAB_KNOWLEDGE_AVAILABLE:
+        try:
+            knowledge_context = get_knowledge_context(user_message)
+        except Exception as e:
+            logger.warning("troubleshooter_node", f"Error obteniendo conocimiento: {e}")
+    
     if is_lab and lab_context:
         prompt = TROUBLESHOOTER_PROMPT.format(
+            knowledge_context=knowledge_context,
             lab_context=lab_context,
             clarification_section=clarification_section,
             evidence_section=evidence_text,
@@ -1541,6 +2111,7 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
         )
     else:
         prompt = TROUBLESHOOTER_PROMPT_SIMPLE.format(
+            knowledge_context=knowledge_context,
             clarification_section=clarification_section,
             evidence_section=evidence_text,
             user_name=state.get("user_name", "Usuario")
@@ -1574,17 +2145,20 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
     # Si obtuvimos datos del lab, incluir acciones sugeridas
     extra_content = ""
     if station_details and not station_details.get("ready_to_operate"):
-        extra_content = "\n\n---\n💡 **Acciones disponibles:**\n"
+        extra_content = "\n\n---\n**Available Actions:**\n"
         if not station_details["ready_details"]["doors_closed"]:
-            extra_content += "- Cierra la puerta de seguridad antes de operar el cobot\n"
+            extra_content += "- Close the safety door before operating the cobot\n"
         if not station_details["ready_details"]["plc_connected"]:
-            extra_content += "- Verifica la conexión de la PLC\n"
+            extra_content += "- Verify PLC connection\n"
+    
+    # Extraer sugerencias del resultado
+    clean_result, suggestions = extract_suggestions_from_text(result_text)
     
     output = WorkerOutputBuilder.troubleshooting(
-        content=result_text + extra_content,
-        problem_identified=f"Problema en {'Estación ' + str(station_num) if station_num else 'equipo'} ({severity})",
+        content=clean_result + extra_content,
+        problem_identified=f"Issue at {'Station ' + str(station_num) if station_num else 'equipment'} ({severity})",
         severity=severity,
-        summary=f"Diagnóstico completado - Severidad: {severity}",
+        summary=f"Diagnosis complete - Severity: {severity}",
         confidence=0.85 if is_lab and station_details else 0.75,
     )
     output.metadata.completed_at = datetime.utcnow().isoformat()
@@ -1592,12 +2166,20 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
     output.metadata.model_used = model_name
     
     logger.node_end("troubleshooter_node", {"severity": severity, "is_lab": is_lab})
-    events.append(event_report("troubleshooting", f"✅ Diagnóstico listo (Severidad: {severity})"))
+    events.append(event_report("troubleshooting", f"Diagnosis ready (Severity: {severity})"))
     
     # Limpiar contexto
     clean_context = pending_context.copy()
     clean_context.pop("user_clarification", None)
     clean_context.pop("original_query", None)
+    
+    # Sugerencias por defecto si no se extrajeron del LLM
+    if not suggestions:
+        suggestions = [
+            "Check other stations for similar issues",
+            "Review recent error logs",
+            "Run a full system diagnostic"
+        ]
     
     return {
         "worker_outputs": [output.model_dump()],
@@ -1606,4 +2188,5 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
         "clarification_questions": [],
         "needs_human_input": False,
         "events": events,
+        "follow_up_suggestions": suggestions,
     }

@@ -34,3 +34,7 @@ sse-starlette>=2.0.0
 pytest
 pytest-asyncio
 black
+
+streamlit
+langgraph
+langchain-anthropic

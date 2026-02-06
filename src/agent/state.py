@@ -147,6 +147,7 @@ class AgentState(TypedDict):
     # ==========================================
     needs_human_input: bool  # True si hay que pausar para input del usuario
     clarification_questions: List[str]  # Preguntas para el usuario
+    follow_up_suggestions: List[str]  # Sugerencias de seguimiento generadas por el agente
     
     # ==========================================
     # 4.5. ANÁLISIS DE INTENCIÓN (NUEVO)
@@ -199,6 +200,7 @@ STATE_DEFAULTS: Dict[str, Any] = {
     # Human-in-the-loop
     "needs_human_input": False,
     "clarification_questions": [],
+    "follow_up_suggestions": [],
     
     # Intent analysis
     "intent_analysis": {},

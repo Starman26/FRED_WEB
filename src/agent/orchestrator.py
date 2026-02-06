@@ -323,7 +323,10 @@ def orchestrator_route_node(state: AgentState) -> Dict[str, Any]:
     plan = state.get("orchestration_plan", [])
     current_step = state.get("current_step", 0)
     worker_outputs = state.get("worker_outputs", [])
-    pending_context = state.get("pending_context", {})
+    pending_context = state.get("pending_context", {}) or {}
+    
+    # IMPORTANTE: Buscar preguntas en el STATE, no solo en worker_output
+    state_questions = state.get("clarification_questions", [])
     
     events = [event_route("orchestrator", "Evaluando siguiente paso...", route="pending")]
     
@@ -343,7 +346,11 @@ def orchestrator_route_node(state: AgentState) -> Dict[str, Any]:
         # SOLO si NO tenemos ya la clarificación
         # ==========================================
         if last_output.get("status") == "needs_context" and not has_user_clarification:
+            # Buscar preguntas: primero en worker_output, luego en state
             questions = last_output.get("clarification_questions", [])
+            if not questions:
+                questions = state_questions
+            
             logger.info("orchestrator_route", f"Worker necesita contexto, {len(questions)} preguntas")
             
             return {
@@ -495,7 +502,7 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
         "current_step": 0,
         "done": False,
         "next": "END",
-        "events": events + [event_report("synthesize", "✅ Respuesta sintetizada")],
+        "events": events + [event_report("synthesize", " Respuesta sintetizada")],
     }
 
 
