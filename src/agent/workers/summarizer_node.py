@@ -81,11 +81,13 @@ def summarizer_node(state: AgentState) -> Dict[str, Any]:
         error_output = create_error_output("summarizer", "LLM_INIT_ERROR", str(e))
         return {"worker_outputs": [error_output.model_dump()], "summarizer_result": error_output.model_dump_json(), "rolling_summary": prior_summary, "window_count": 0, "events": events}
     
+    prior_summary_section = ""
+    if prior_summary:
+        prior_summary_section = f"## RESUMEN PREVIO (intégralo)\n{prior_summary}\n\n"
+    
     prompt_content = f"""{SUMMARIZER_PROMPT}
 
-{"## RESUMEN PREVIO (intégralo)\n" + prior_summary if prior_summary else ""}
-
-## MENSAJES A RESUMIR ({messages_to_compress})
+{prior_summary_section}## MENSAJES A RESUMIR ({messages_to_compress})
 {messages_text}"""
     
     try:
