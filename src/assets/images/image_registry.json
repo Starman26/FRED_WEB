@@ -1,0 +1,163 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-01-27T12:00:00.000000",
+  "total_images": 3,
+  "images": [
+    {
+      "id": "plc_general",
+      "hash": null,
+      "title": "PLC Industrial",
+      "description": "Imagen de PLC industrial para automatizacion",
+      "alt_text": "PLC industrial controller",
+      "source": "local",
+      "source_url": null,
+      "source_page": null,
+      "author": null,
+      "author_url": null,
+      "license": {
+        "type": "internal",
+        "name": "Internal Use",
+        "url": null,
+        "requires_attribution": false,
+        "allows_commercial": true,
+        "allows_modification": true,
+        "attribution_text": null
+      },
+      "category": "plc-general",
+      "tags": [
+        "plc",
+        "industrial",
+        "automation",
+        "controller",
+        "automatizacion"
+      ],
+      "keywords": [
+        "PLC",
+        "controlador",
+        "programable",
+        "industrial",
+        "automatizacion"
+      ],
+      "width": null,
+      "height": null,
+      "format": "jpg",
+      "size_bytes": null,
+      "local_path": "src/assets/images/plc.jpg",
+      "cached_at": null,
+      "cache_expires": null,
+      "quality_score": 1.0,
+      "relevance_score": 1.0,
+      "created_at": "2026-01-27T12:00:00.000000",
+      "updated_at": "2026-01-27T12:00:00.000000",
+      "extra": {
+        "predefined": false,
+        "needs_download": false
+      }
+    },
+    {
+      "id": "plc_diagram",
+      "hash": null,
+      "title": "Diagrama de PLC",
+      "description": "Diagrama de conexiones y cableado de PLC",
+      "alt_text": "PLC wiring diagram",
+      "source": "local",
+      "source_url": null,
+      "source_page": null,
+      "author": null,
+      "author_url": null,
+      "license": {
+        "type": "internal",
+        "name": "Internal Use",
+        "url": null,
+        "requires_attribution": false,
+        "allows_commercial": true,
+        "allows_modification": true,
+        "attribution_text": null
+      },
+      "category": "plc-diagram",
+      "tags": [
+        "plc",
+        "diagram",
+        "wiring",
+        "conexiones",
+        "cableado",
+        "esquema"
+      ],
+      "keywords": [
+        "diagrama",
+        "PLC",
+        "conexiones",
+        "cableado",
+        "esquema electrico"
+      ],
+      "width": null,
+      "height": null,
+      "format": "png",
+      "size_bytes": null,
+      "local_path": "src/assets/images/plc_diagram.png",
+      "cached_at": null,
+      "cache_expires": null,
+      "quality_score": 1.0,
+      "relevance_score": 1.0,
+      "created_at": "2026-01-27T12:00:00.000000",
+      "updated_at": "2026-01-27T12:00:00.000000",
+      "extra": {
+        "predefined": false,
+        "needs_download": false
+      }
+    },
+    {
+      "id": "abb_robot",
+      "hash": null,
+      "title": "Robot ABB Colaborativo",
+      "description": "Robot colaborativo ABB para aplicaciones industriales",
+      "alt_text": "ABB collaborative robot",
+      "source": "local",
+      "source_url": null,
+      "source_page": null,
+      "author": null,
+      "author_url": null,
+      "license": {
+        "type": "internal",
+        "name": "Internal Use",
+        "url": null,
+        "requires_attribution": false,
+        "allows_commercial": true,
+        "allows_modification": true,
+        "attribution_text": null
+      },
+      "category": "robot-arm",
+      "tags": [
+        "robot",
+        "abb",
+        "cobot",
+        "collaborative",
+        "industrial",
+        "brazo robotico"
+      ],
+      "keywords": [
+        "robot",
+        "ABB",
+        "cobot",
+        "colaborativo",
+        "brazo robotico",
+        "industrial"
+      ],
+      "width": null,
+      "height": null,
+      "format": "jpg",
+      "size_bytes": null,
+      "local_path": "src/assets/images/abb_robot.jpg",
+      "cached_at": null,
+      "cache_expires": null,
+      "quality_score": 1.0,
+      "relevance_score": 1.0,
+      "created_at": "2026-01-27T12:00:00.000000",
+      "updated_at": "2026-01-27T12:00:00.000000",
+      "extra": {
+        "predefined": false,
+        "needs_download": false
+      }
+    }
+  ]
+}

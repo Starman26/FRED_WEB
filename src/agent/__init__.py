@@ -1,5 +1,5 @@
 """
-Atlas Multi-Agent System con Orchestration Multi-Step
+ Multi-Agent System con Orchestration Multi-Step
 
 Este módulo implementa un sistema multi-agente con:
 - Orchestration multi-step (plan → execute → route → synthesize)

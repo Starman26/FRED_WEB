@@ -6,6 +6,9 @@ Features:
 - Opciones múltiples con botones/radio
 - Máximo 3 preguntas por interacción
 - Flujo tipo wizard (una pregunta a la vez)
+- Diseño profesional con tonos grises medios
+- Animación de carga en eventos en tiempo real
+- Sugerencias de seguimiento generadas por el agente
 """
 
 import os
@@ -15,6 +18,7 @@ import logging
 import uuid
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+import html as html_escape
 
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
@@ -34,59 +38,281 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 st.set_page_config(
-    page_title="ATLAS Agent",
-    page_icon="🤖",
+    page_title="SENTINEL Multi-Agent System",
+    page_icon="⚙",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# CSS personalizado para tarjetas de preguntas
+# CSS personalizado para diseño profesional en grises oscuros
 st.markdown("""
 <style>
-.question-card {
-    background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
-    border-radius: 12px;
-    padding: 20px;
-    margin: 10px 0;
-    border-left: 4px solid #4da6ff;
+/* Paleta de grises oscuros y neutrales */
+:root {
+    --gray-900: #0f0f0f;
+    --gray-850: #1a1a1a;
+    --gray-800: #2a2a2a;
+    --gray-700: #3a3a3a;
+    --gray-600: #4a4a4a;
+    --gray-500: #5a5a5a;
+    --gray-400: #7a7a7a;
+    --gray-300: #9a9a9a;
+    --gray-200: #b0b0b0;
+    --gray-100: #d0d0d0;
 }
+
+/* Contenedor principal */
+.main { background-color: #141414; }
+[data-testid="stAppViewContainer"] { background-color: #141414; }
+[data-testid="stHeader"] { background-color: #141414; }
+section[data-testid="stSidebar"] + div { background-color: #141414; }
+
+/* Sidebar */
+[data-testid="stSidebar"] { background-color: #2a2a2a; }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { color: #d0d0d0 !important; }
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] { color: #b0b0b0; }
+
+/* =========================================
+   TARJETAS DE PREGUNTAS MEJORADAS
+   ========================================= */
+.question-card {
+    background: linear-gradient(135deg, #3a3a3a 0%, #4a4a4a 100%);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 16px 0;
+    border-left: 4px solid #7a7a7a;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+}
+
+.question-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+    border-left-color: #9a9a9a;
+}
+
+.question-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+    transform: translateX(-100%);
+}
+
+.question-card:hover::before {
+    animation: shimmer 1.5s ease-in-out;
+}
+
+@keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
 .question-title {
-    color: #4da6ff;
+    color: #d0d0d0;
     font-size: 14px;
     font-weight: 600;
     margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
+
+.question-title::before {
+    content: "⚡";
+    font-size: 12px;
+    opacity: 0.8;
+}
+
 .question-text {
     color: #ffffff;
     font-size: 16px;
     font-weight: 500;
-    margin-bottom: 15px;
+    margin-bottom: 20px;
+    line-height: 1.5;
+    padding: 8px 0;
 }
-.option-button {
-    background: rgba(255,255,255,0.1);
-    border: 1px solid rgba(255,255,255,0.2);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin: 5px 0;
-    cursor: pointer;
-    transition: all 0.2s;
+
+.question-progress {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    padding: 8px 0;
 }
-.option-button:hover {
-    background: rgba(77, 166, 255, 0.3);
-    border-color: #4da6ff;
+
+.progress-bar {
+    flex-grow: 1;
+    height: 4px;
+    background-color: #2a2a2a;
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 0 12px;
 }
-.option-id {
-    color: #4da6ff;
-    font-weight: 600;
-    margin-right: 10px;
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #7a7a7a, #9a9a9a);
+    border-radius: 2px;
+    transition: width 0.6s ease;
 }
-.option-label {
-    color: #ffffff;
+
+/* Botones y controles */
+.stButton > button { background-color: #3a3a3a; color: #d0d0d0; border: 1px solid #7a7a7a; border-radius: 8px; transition: all 0.2s; }
+.stButton > button:hover { background-color: #4a4a4a; border-color: #9a9a9a; }
+.stSelectbox, .stTextInput, .stTextArea { background-color: #2a2a2a; color: #d0d0d0; }
+.stSelectbox [data-testid="stSelectboxOption"], .stTextInput input, .stTextArea textarea { background-color: #3a3a3a !important; color: #d0d0d0 !important; }
+
+/* Chat y Logs */
+.stChatMessage { background-color: #2a2a2a; border-radius: 8px; padding: 12px; margin-bottom: 8px; border: 1px solid #3a3a3a; }
+[data-testid="stChatInput"] { background-color: #1a1a1a !important; }
+[data-testid="stChatInput"] textarea { background-color: #2a2a2a !important; color: #d0d0d0 !important; }
+[data-testid="stBottomBlockContainer"] { background-color: #141414 !important; }
+
+/* =========================================
+   ANIMACIONES DE TIMELINE PROFESIONALES
+   ========================================= */
+
+/* Entrada suave de los items */
+@keyframes slideUpFade {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
 }
-.option-desc {
-    color: rgba(255,255,255,0.6);
-    font-size: 12px;
-    margin-left: 25px;
+
+.timeline-row {
+    display: flex;
+    align-items: flex-start;
+    margin: 0;
+    padding-bottom: 0;
+    animation: slideUpFade 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Columna de la línea (izquierda) */
+.timeline-left {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 24px;
+    margin-right: 14px;
+    padding-top: 6px;
+}
+
+/* El punto (Dot) estático */
+.timeline-dot {
+    width: 10px;
+    height: 10px;
+    background-color: #5a5a5a;
+    border-radius: 50%;
+    border: 2px solid #2a2a2a;
+    box-shadow: 0 0 0 1px #5a5a5a;
+    z-index: 2;
+}
+
+/* El punto activo (Pulsing) */
+.timeline-dot.active {
+    background-color: #d0d0d0;
+    box-shadow: 0 0 0 0 rgba(200, 200, 200, 0.7);
+    animation: pulse-gray 2s infinite;
+    border-color: #d0d0d0;
+}
+
+@keyframes pulse-gray {
+    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(180, 180, 180, 0.5); }
+    70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(180, 180, 180, 0); }
+    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(180, 180, 180, 0); }
+}
+
+/* La línea conectora vertical */
+.timeline-line {
+    width: 2px;
+    background-color: #3a3a3a;
+    flex-grow: 1;
+    min-height: 24px;
+    margin-top: -2px;
+    z-index: 1;
+}
+
+.timeline-line.hidden {
+    display: none;
+}
+
+/* Contenido de texto */
+.timeline-content {
+    padding-top: 2px;
+    padding-bottom: 16px;
+    display: flex;
+    flex-direction: column;
+}
+
+.timeline-node {
+    font-family: 'SF Mono', 'Roboto Mono', monospace;
+    font-size: 11px;
+    color: #7a7a7a;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+}
+
+.timeline-msg {
+    font-size: 14px;
+    color: #c0c0c0;
+    line-height: 1.4;
+}
+
+/* =========================================
+   SUGERENCIAS DE SEGUIMIENTO
+   ========================================= */
+.suggestions-container {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid #2a2a2a;
+    border-bottom: 1px solid #2a2a2a;
+    padding-bottom: 20px;
+}
+
+.suggestions-title {
+    color: #5a5a5a;
+    font-size: 11px;
+    font-weight: 500;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    text-align: left;
+}
+
+/* Estilizar los botones de sugerencias (tipo secondary) */
+div[data-testid="stVerticalBlock"] button[kind="secondary"] {
+    background-color: transparent !important;
+    border: 1px solid transparent !important;
+    color: #7a7a7a !important;
+    text-align: left !important;
+    padding: 10px 0px !important;
+    font-size: 14px !important;
+    border-radius: 8px !important;
+    transition: all 0.2s ease !important;
+    justify-content: flex-start !important;
+    width: auto !important;
+    display: block !important;
+}
+
+div[data-testid="stVerticalBlock"] button[kind="secondary"] p {
+    text-align: left !important;
+}
+
+div[data-testid="stVerticalBlock"] button[kind="secondary"]:hover {
+    background-color: #1a1a1a !important;
+    border-color: #3a3a3a !important;
+    color: #b0b0b0 !important;
+    padding-left: 12px !important;
+    border-left: 3px solid #5a5a5a !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -127,7 +353,6 @@ def load_graph():
     """
     Carga el grafo con un checkpointer persistente en session_state.
     """
-    # Si ya existe el grafo en session_state, usarlo
     if "langgraph_instance" in st.session_state:
         return st.session_state.langgraph_instance
     
@@ -147,12 +372,10 @@ def load_graph():
         from src.agent.workers.troubleshooter_node import troubleshooter_node
         from src.agent.workers.summarizer_node import summarizer_node
         
-        # Crear checkpointer persistente
         if "langgraph_checkpointer" not in st.session_state:
             st.session_state.langgraph_checkpointer = MemorySaver()
-            logger.info("🗄️ Checkpointer creado")
+            logger.info("Checkpointer creado")
         
-        # Construir el grafo manualmente
         workflow = StateGraph(AgentState)
         
         workflow.add_node("bootstrap", bootstrap_node)
@@ -211,15 +434,14 @@ def load_graph():
             "route": "route", "plan": "plan"
         })
         
-        # Compilar CON checkpointer
         graph = workflow.compile(checkpointer=st.session_state.langgraph_checkpointer)
         
         st.session_state.langgraph_instance = graph
-        logger.info("✅ Grafo cargado con checkpointer persistente")
+        logger.info("Grafo cargado con checkpointer persistente")
         return graph
         
     except Exception as e:
-        logger.error(f"❌ Error al cargar el grafo: {str(e)}")
+        logger.error(f"Error al cargar el grafo: {str(e)}")
         st.error(f"Error al cargar el grafo: {str(e)}")
         st.stop()
 
@@ -227,7 +449,7 @@ def load_graph():
 def initialize_session_state():
     defaults = {
         "messages": [],
-        "user_name": "Usuario",
+        "user_name": "User",
         "learning_style": {
             "type": "visual",
             "pace": "medium",
@@ -239,10 +461,11 @@ def initialize_session_state():
         "is_loading": False,
         "pending_interrupt": None,
         "raw_logs": [],
-        "pending_questions": [],  # Preguntas estructuradas pendientes
-        "pending_content": "",  # Contenido del worker antes de las preguntas
-        "current_question_idx": 0,  # Índice de pregunta actual
-        "question_answers": {},  # Respuestas acumuladas
+        "pending_questions": [],
+        "pending_content": "",
+        "current_question_idx": 0,
+        "question_answers": {},
+        "follow_up_suggestions": [],  # Sugerencias de seguimiento
     }
     
     for key, default in defaults.items():
@@ -251,7 +474,7 @@ def initialize_session_state():
     
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = f"streamlit-{uuid.uuid4()}"
-        logger.info(f"🆔 Nueva sesión: {st.session_state.thread_id}")
+        logger.info(f"Nueva sesión: {st.session_state.thread_id}")
     
     install_log_handler_once()
 
@@ -272,26 +495,93 @@ def extract_message_content(msg: Any) -> Optional[str]:
     return None
 
 
-def get_event_icon(event: Dict) -> str:
-    type_icons = {
-        "read": "📖", "plan": "🧠", "execute": "⚙️",
-        "report": "📊", "route": "🔀", "error": "❌", "done": "✅",
-    }
-    return type_icons.get(event.get("type", "").lower(), "•")
+def clean_message_content(content: str) -> str:
+    """Limpia el contenido del mensaje eliminando HTML y contenido del wizard"""
+    if not content:
+        return None
+    content_str = str(content)
+    
+    if content_str.strip() in ["None", "null", "", "none"]:
+        return None
+    
+    if '<div style=' in content_str or '</div>' in content_str or '<span style=' in content_str:
+        return None
+    
+    wizard_indicators = [
+        "Pregunta 1: ¿",
+        "Pregunta 2: ¿",
+        "Pregunta 3: ¿",
+        "Respuestas del usuario:\n",
+        "Por favor, proporciona la información solicitada",
+        "Necesito saber qué estación presenta problemas y qué tipo de fallo",
+        '"question_set"',
+        '"wizard_mode"',
+        "- Estación 1\n- Estación 2\n- Estación 3",
+        "- PLC: Controlador lógico programable\n",
+        "- Cobot: Robot colaborativo\n",
+    ]
+    
+    for indicator in wizard_indicators:
+        if indicator in content_str:
+            return None
+    
+    cleaned = content_str.strip()
+    if len(cleaned) < 10:
+        return None
+    
+    return content_str
 
 
-def format_event_display(event: Dict) -> str:
-    icon = get_event_icon(event)
+def format_event_display(event: Dict, is_last: bool = False, is_loading: bool = False) -> str:
+    """
+    Retorna HTML para mostrar eventos como una línea de tiempo profesional.
+    """
     node = event.get("source", event.get("node", "?")).upper()
     message = event.get("content", event.get("message", ""))
-    return f"{icon} **{node}**: {message}"
+    
+    message = html_escape.escape(str(message))
+    node = html_escape.escape(str(node))
+    
+    dot_class = "timeline-dot active" if (is_loading and is_last) else "timeline-dot"
+    line_class = "timeline-line hidden" if is_last else "timeline-line"
+    
+    html = f"""
+    <div class="timeline-row">
+        <div class="timeline-left">
+            <div class="{dot_class}"></div>
+            <div class="{line_class}"></div>
+        </div>
+        <div class="timeline-content">
+            <div class="timeline-node">{node}</div>
+            <div class="timeline-msg">{message}</div>
+        </div>
+    </div>
+    """
+    return html
 
 
 def extract_messages_from_events(events: List[Dict]) -> tuple[List[str], Dict]:
+    """Extrae mensajes de los eventos, filtrando contenido del wizard"""
     messages = []
     final_state = {}
     node_names = ["plan", "route", "synthesize", "chat", "tutor",
                   "troubleshooting", "summarizer", "research", "human_input"]
+    
+    skip_indicators = [
+        "Pregunta 1: ¿",
+        "Pregunta 2: ¿",
+        "Pregunta 3: ¿",
+        "Respuestas del usuario:\n",
+        "Necesito saber qué estación presenta problemas",
+        "Necesito saber en qué estación tienes el problema",
+        "Por favor, proporciona la información solicitada",
+        '"question_set"',
+        '"wizard_mode"',
+        "**No respondida**",
+        "- Estación 1\n- Estación 2\n",
+        "- PLC: Controlador",
+        "- Cobot: Robot colaborativo",
+    ]
 
     for event in events:
         if isinstance(event, dict):
@@ -299,214 +589,297 @@ def extract_messages_from_events(events: List[Dict]) -> tuple[List[str], Dict]:
                 if node_name in event:
                     node_data = event[node_name]
                     if isinstance(node_data, dict) and "messages" in node_data:
-                        node_messages = node_data["messages"]
-                        if isinstance(node_messages, list):
-                            for msg in node_messages:
-                                content = extract_message_content(msg)
-                                if content and content not in messages:
-                                    messages.append(content)
-                        else:
-                            content = extract_message_content(node_messages)
-                            if content and content not in messages:
-                                messages.append(content)
-            final_state = event
+                        msgs = node_data["messages"]
+                        if isinstance(msgs, list):
+                            for m in msgs:
+                                content = extract_message_content(m)
+                                if content:
+                                    content_str = str(content)
+                                    
+                                    if content_str.strip() in ["None", "null", ""]:
+                                        continue
+                                    
+                                    should_skip = False
+                                    for indicator in skip_indicators:
+                                        if indicator in content_str:
+                                            should_skip = True
+                                            break
+                                    
+                                    if not should_skip and len(content_str.strip()) > 10:
+                                        messages.append(content)
+                        final_state.update(node_data)
 
     return messages, final_state
 
 
+def extract_suggestions_from_events(events: List[Dict]) -> List[str]:
+    """Extrae las sugerencias de seguimiento de los eventos del grafo"""
+    suggestions = []
+    node_names = ["chat", "tutor", "troubleshooting", "research", "summarizer"]
+    
+    for event in events:
+        if isinstance(event, dict):
+            for node_name in node_names:
+                if node_name in event:
+                    node_data = event[node_name]
+                    if isinstance(node_data, dict):
+                        # Buscar sugerencias directamente en el nodo
+                        node_suggestions = node_data.get("follow_up_suggestions", [])
+                        if node_suggestions:
+                            suggestions = node_suggestions
+    
+    return suggestions[:3]  # Máximo 3 sugerencias
+
+
+def extract_images_from_events(events: List[Dict]) -> List[Dict[str, Any]]:
+    """Extrae las imágenes relevantes de los eventos del grafo"""
+    images = []
+    node_names = ["tutor", "troubleshooting", "research"]
+    
+    for event in events:
+        if isinstance(event, dict):
+            for node_name in node_names:
+                if node_name in event:
+                    node_data = event[node_name]
+                    if isinstance(node_data, dict):
+                        # Buscar imágenes en worker_outputs
+                        worker_outputs = node_data.get("worker_outputs", [])
+                        for output in worker_outputs:
+                            if isinstance(output, dict):
+                                extra = output.get("extra", {})
+                                if isinstance(extra, dict):
+                                    output_images = extra.get("images", [])
+                                    if output_images:
+                                        images.extend(output_images)
+    
+    return images
+
+
 def extract_questions_from_event(event: Dict) -> List[Dict]:
-    """Extrae preguntas estructuradas de un evento de interrupt"""
-    # Buscar en troubleshooting o cualquier nodo que tenga clarification_questions
-    for node_name in ["troubleshooting", "research", "tutor"]:
-        if node_name in event and isinstance(event[node_name], dict):
-            questions = event[node_name].get("clarification_questions", [])
-            if questions:
-                return questions
+    """Extrae preguntas estructuradas del evento"""
+    if not isinstance(event, dict):
+        return []
+    
+    for node_name in ["human_input", "troubleshooting", "tutor"]:
+        if node_name in event:
+            node_data = event[node_name]
+            if isinstance(node_data, dict):
+                questions = node_data.get("clarification_questions", [])
+                if questions:
+                    return questions
     return []
 
 
-# ============================================
-# COMPONENTES DE UI PARA PREGUNTAS
-# ============================================
+def render_images(images: List[Dict[str, Any]]):
+    """Renderiza la imagen mas relevante en el chat"""
+    if not images:
+        return
 
-def render_question_card(question: Dict, question_num: int) -> Optional[str]:
-    """
-    Renderiza una tarjeta de pregunta con opciones.
+    # Show only 1 best matching image
+    img = images[0]
+    img_id = img.get("id", "")
+    title = img.get("title", "Technical Image")
+    local_path = img.get("local_path", "")
+
+    try:
+        # First try local file using local_path from metadata
+        if local_path and os.path.exists(local_path):
+            st.image(local_path, caption=title, width="stretch")
+        elif os.path.exists(f"src/assets/images/{img_id}.jpg"):
+            st.image(f"src/assets/images/{img_id}.jpg", caption=title, width="stretch")
+        elif os.path.exists(f"src/assets/images/{img_id}.png"):
+            st.image(f"src/assets/images/{img_id}.png", caption=title, width="stretch")
+    except Exception as e:
+        logger.warning(f"Error displaying image {img_id}: {e}")
+
+
+def render_suggestions(suggestions: List[str]):
+    """Renderiza las sugerencias de seguimiento como botones clickeables con diseño minimalista"""
+    if not suggestions:
+        return
     
-    Returns:
-        La respuesta seleccionada o None si no se ha respondido
-    """
-    q_id = question.get("id", f"q{question_num}")
-    q_text = question.get("question", "")
-    q_type = question.get("type", "choice")
-    options = question.get("options", [])
-    placeholder = question.get("placeholder", "Escribe tu respuesta...")
-    
-    st.markdown(f"""
-    <div class="question-card">
-        <div class="question-title">📋 Pregunta {question_num}</div>
-        <div class="question-text">{q_text}</div>
+    st.markdown("""
+    <div class="suggestions-container">
+        <div class="suggestions-title">Follow-up suggestions</div>
     </div>
     """, unsafe_allow_html=True)
     
-    answer = None
-    
-    if q_type == "choice" and options:
-        # Crear opciones para radio buttons
-        option_labels = []
-        option_values = {}
+    for i, suggestion in enumerate(suggestions):
+        # Procesar el texto de la sugerencia
+        if isinstance(suggestion, dict):
+            text = suggestion.get("text", suggestion.get("question", str(suggestion)))
+        else:
+            text = str(suggestion)
         
-        for opt in options:
-            opt_id = opt.get("id", "")
-            opt_label = opt.get("label", "")
-            opt_desc = opt.get("description", "")
-            
-            display = f"{opt_id}) {opt_label}"
-            if opt_desc:
-                display += f" — _{opt_desc}_"
-            
-            option_labels.append(display)
-            option_values[display] = {"id": opt_id, "label": opt_label}
-        
-        selected = st.radio(
-            "Selecciona una opción:",
-            option_labels,
-            key=f"radio_{q_id}",
-            label_visibility="collapsed"
-        )
-        
-        if selected and selected in option_values:
-            answer = option_values[selected]["label"]
-            
-            # Si es "Otro", mostrar campo de texto
-            if option_values[selected]["id"] == "other":
-                other_text = st.text_input(
-                    "Especifica:",
-                    key=f"other_{q_id}",
-                    placeholder="Escribe aquí..."
-                )
-                if other_text:
-                    answer = other_text
-    
-    elif q_type == "boolean":
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ Sí", key=f"yes_{q_id}", use_container_width=True):
-                answer = "Sí"
-        with col2:
-            if st.button("❌ No", key=f"no_{q_id}", use_container_width=True):
-                answer = "No"
-    
-    elif q_type == "text":
-        answer = st.text_area(
-            "Tu respuesta:",
-            key=f"text_{q_id}",
-            placeholder=placeholder,
-            height=100,
-            label_visibility="collapsed"
-        )
-    
-    return answer
+        # Usar solo el botón de Streamlit con estilo personalizado via CSS
+        if st.button(
+            f"○  {text}",
+            key=f"suggestion_{i}_{hash(text)}",
+            type="secondary",
+        ):
+            st.session_state.pending_suggestion = text
+            st.rerun()
 
 
-def render_questions_wizard():
+def render_questions_wizard() -> bool:
     """
-    Renderiza las preguntas una por una (wizard).
-    Retorna True si todas las preguntas fueron respondidas.
+    Renderiza el wizard de preguntas usando componentes nativos de Streamlit.
+    Retorna True si todas las preguntas han sido respondidas.
     """
+    if not st.session_state.pending_questions:
+        return False
+
     questions = st.session_state.pending_questions
     current_idx = st.session_state.current_question_idx
-    answers = st.session_state.question_answers
-    
-    if not questions:
+
+    if current_idx >= len(questions):
         return True
-    
+
+    current_q = questions[current_idx]
     total = len(questions)
-    
-    # Progress bar
-    progress = (current_idx) / total
-    st.progress(progress, text=f"Pregunta {current_idx + 1} de {total}")
-    
-    # Mostrar pregunta actual
-    if current_idx < total:
-        current_q = questions[current_idx]
-        q_id = current_q.get("id", f"q{current_idx}")
-        
-        answer = render_question_card(current_q, current_idx + 1)
-        
-        # Botón para confirmar respuesta
-        col1, col2, col3 = st.columns([1, 2, 1])
-        
-        with col2:
-            if st.button("✓ Confirmar respuesta", key=f"confirm_{q_id}", 
-                        use_container_width=True, type="primary",
-                        disabled=not answer):
-                if answer:
-                    # Guardar respuesta
-                    answers[q_id] = answer
-                    st.session_state.question_answers = answers
-                    
-                    # Avanzar a siguiente pregunta
-                    st.session_state.current_question_idx = current_idx + 1
+    progress = ((current_idx) / total) * 100
+
+    with st.container():
+        st.markdown(f"""
+        <div class="question-card">
+            <div class="question-title">QUESTION {current_idx + 1} OF {total}</div>
+            <div class="question-text">{html_escape.escape(current_q.get("question", current_q.get("text", "")))}</div>
+            <div class="question-progress">
+                <span style="color: #9a9a9a; font-size: 12px;">Progress</span>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {progress}%"></div>
+                </div>
+                <span style="color: #9a9a9a; font-size: 12px;">{current_idx + 1}/{total}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    question_id = current_q.get("id", f"q{current_idx}")
+    options = current_q.get("options", current_q.get("choices", []))
+    option_data = []
+
+    if options and len(options) > 0:
+        first_opt = options[0]
+        if isinstance(first_opt, dict):
+            for opt in options:
+                label = opt.get("label", opt.get("text", opt.get("name", "")))
+                value = opt.get("value", opt.get("id", label))
+                option_data.append((label, value))
+        else:
+            option_data = [(opt, opt) for opt in options]
+
+    if option_data:
+        cols = st.columns(2)
+        for i, (label, value) in enumerate(option_data):
+            col_idx = i % 2
+            with cols[col_idx]:
+                if st.button(
+                    label,
+                    key=f"opt_{question_id}_{i}",
+                    width="stretch",
+                    type="primary" if i == 0 else "secondary"
+                ):
+                    st.session_state.question_answers[question_id] = value
+                    st.session_state.current_question_idx += 1
                     st.rerun()
-        
-        # Mostrar respuestas anteriores
-        if answers:
-            with st.expander("📝 Respuestas anteriores", expanded=False):
-                for i, q in enumerate(questions[:current_idx]):
-                    qid = q.get("id", f"q{i}")
-                    if qid in answers:
-                        st.markdown(f"**{q.get('question', '')}**")
-                        st.markdown(f"→ _{answers[qid]}_")
-                        st.divider()
-        
-        return False
-    
-    return True
+    else:
+        user_answer = st.text_area(
+            "Your response:",
+            key=f"q_{question_id}",
+            height=80,
+            placeholder="Type your answer here...",
+            label_visibility="visible"
+        )
+
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            if st.button("Continue", key=f"next_{question_id}", width="stretch"):
+                if user_answer:
+                    st.session_state.question_answers[question_id] = user_answer
+                    st.session_state.current_question_idx += 1
+                    st.rerun()
+                else:
+                    st.warning("Please provide an answer before continuing.")
+
+        with col2:
+            if st.button("Skip question", key=f"skip_{question_id}", width="stretch"):
+                st.session_state.question_answers[question_id] = "Not answered"
+                st.session_state.current_question_idx += 1
+                st.rerun()
+
+    return False
 
 
 def format_answers_for_agent(questions: List[Dict], answers: Dict) -> str:
     """Formatea las respuestas para enviar al agente"""
-    lines = []
+    formatted = "User responses:\n\n"
+    
     for q in questions:
         q_id = q.get("id", "")
         q_text = q.get("question", "")
-        answer = answers.get(q_id, "No respondida")
-        lines.append(f"- {q_text}: {answer}")
-    return "\n".join(lines)
+        answer = answers.get(q_id, "Not answered")
+        formatted += f"**{q_text}**\n{answer}\n\n"
+    
+    return formatted
 
 
 # ============================================
-# INTERFAZ PRINCIPAL
+# MAIN
 # ============================================
 
 def main():
     initialize_session_state()
     graph = load_graph()
-
-    st.title("🤖 ATLAS - Agente Multiagente")
-    st.markdown("Sistema inteligente con orchestration multi-step")
-
+    
     # ============================================
     # SIDEBAR
     # ============================================
     with st.sidebar:
-        st.header("⚙️ Configuración")
+        st.markdown(
+            """
+            <style>
+            [data-testid="stSidebar"] .stTextInput input {
+                background-color: #2b2b2b !important;
+                color: #ffffff !important;
+                border: 1px solid #4a4a4a;
+            }
+            [data-testid="stSidebar"] div[data-baseweb="select"] > div {
+                background-color: #2b2b2b !important;
+                color: #ffffff !important;
+                border: 1px solid #4a4a4a;
+            }
+            [data-testid="stSidebar"] .stCode {
+                background-color: #2b2b2b !important;
+            }
+            [data-testid="stSidebar"] .stCode pre {
+                background-color: #2b2b2b !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+        st.title("SENTINEL")
         
+        st.markdown(
+            "**Multi-Agent Operations System**\n\n"
+            "Technical diagnostics and laboratory operations interface."
+        )
+        
+        st.divider()
+        
+        st.subheader("User Profile")
         user_name = st.text_input(
-            "Nombre de usuario",
+            "Display Name",
             value=st.session_state.user_name,
-            help="Tu nombre para personalizar respuestas",
+            placeholder="Enter your name"
         )
         st.session_state.user_name = user_name
 
-        # Learning Style - Estilo de aprendizaje estructurado
-        st.subheader("📚 Estilo de aprendizaje")
+        st.subheader("Cognitive Settings")
 
-        # Obtener valores actuales del dict
         current_style = st.session_state.learning_style
         if isinstance(current_style, str):
-            # Si es string, usar valores por defecto
             current_style = {
                 "type": "visual",
                 "pace": "medium",
@@ -515,34 +888,29 @@ def main():
             }
 
         learning_type = st.selectbox(
-            "Tipo de aprendizaje",
+            "Learning Modality",
             options=["visual", "auditory", "kinesthetic", "reading"],
             index=["visual", "auditory", "kinesthetic", "reading"].index(current_style.get("type", "visual")),
-            help="Cómo prefieres recibir información"
         )
 
         pace = st.selectbox(
-            "Ritmo",
+            "Interaction Pace",
             options=["slow", "medium", "fast"],
             index=["slow", "medium", "fast"].index(current_style.get("pace", "medium")),
-            help="Velocidad de las explicaciones"
         )
 
         depth = st.selectbox(
-            "Profundidad",
+            "Technical Depth",
             options=["basic", "intermediate", "advanced"],
             index=["basic", "intermediate", "advanced"].index(current_style.get("depth", "intermediate")),
-            help="Nivel de detalle técnico"
         )
 
         examples = st.selectbox(
-            "Ejemplos",
+            "Example Orientation",
             options=["theoretical", "practical", "both"],
             index=["theoretical", "practical", "both"].index(current_style.get("examples", "practical")),
-            help="Tipo de ejemplos preferidos"
         )
 
-        # Crear el dict estructurado
         st.session_state.learning_style = {
             "type": learning_type,
             "pace": pace,
@@ -551,50 +919,53 @@ def main():
         }
 
         st.divider()
-        st.subheader("🆔 Sesión")
+
+        st.subheader("Session Management")
+        st.caption("Active Thread ID:")
         st.code(st.session_state.thread_id[:20] + "...", language=None)
 
-        if st.button("🔄 Nueva conversación"):
-                    for key in ["thread_id", "messages", "window_count", "rolling_summary",
-                            "pending_interrupt", "raw_logs", "pending_questions",
-                            "pending_content", "current_question_idx", "question_answers",
-                            "langgraph_checkpointer", "langgraph_instance"]:
-                        if key in st.session_state:
-                            del st.session_state[key]
-                    logger.info("🔄 Sesión reiniciada - checkpointer limpio")  # ← DENTRO del if
-                    st.rerun()  # ← DENTRO del if
+        if st.button("Reset System State", type="primary", width="stretch"):
+            keys_to_reset = [
+                "thread_id", "messages", "window_count", "rolling_summary",
+                "pending_interrupt", "raw_logs", "pending_questions",
+                "pending_content", "current_question_idx", "question_answers",
+                "langgraph_checkpointer", "langgraph_instance", "follow_up_suggestions"
+            ]
+            for key in keys_to_reset:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
 
-        st.divider()
-        st.subheader("📊 Estado")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Mensajes", len(st.session_state.messages))
-        with col2:
-            pending = len(st.session_state.pending_questions)
-            st.metric("Preguntas", pending)
-
-        if st.button("🗑️ Limpiar historial"):
+        if st.button("Clear Chat History", width="stretch"):
             st.session_state.messages = []
             st.session_state.pending_questions = []
             st.session_state.pending_content = ""
             st.session_state.question_answers = {}
             st.session_state.current_question_idx = 0
+            st.session_state.follow_up_suggestions = []
             st.rerun()
 
         st.divider()
-        with st.expander("🧾 Logs (debug)"):
+
+        st.subheader("System Metrics")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Total Messages", len(st.session_state.messages))
+        with col2:
+            pending = len(st.session_state.get("pending_questions", []))
+            st.metric("Pending Queries", pending)
+
+        with st.expander("System Logs (Debug)"):
             raw = st.session_state.get("raw_logs", [])
-            st.code("\n".join(raw[-50:]) if raw else "— sin logs —", language=None)
+            st.code("\n".join(raw[-50:]) if raw else "No logs available", language="text")
 
     # ============================================
     # ÁREA PRINCIPAL
     # ============================================
-    st.subheader("💬 Conversación")
-
-    # Mostrar historial de mensajes
-    chat_container = st.container(height=500)
+    
+    chat_container = st.container()
     with chat_container:
-        for message in st.session_state.messages:
+        for msg_idx, message in enumerate(st.session_state.messages):
             role = message["role"]
             content = message["content"]
             msg_type = message.get("type", "text")
@@ -602,58 +973,70 @@ def main():
             if msg_type == "separator":
                 st.divider()
             elif msg_type == "log":
-                st.markdown(content)
+                st.markdown(content, unsafe_allow_html=True)
+            elif msg_type == "logs_group":
+                with st.expander("Show Sentinel Thoughts", expanded=False):
+                    st.markdown(content, unsafe_allow_html=True)
             elif msg_type == "announcement":
                 with st.chat_message("assistant"):
                     st.info(content)
+            elif msg_type == "images":
+                # Render images
+                if isinstance(content, list):
+                    render_images(content)
+            elif role == "user":
+                st.markdown(f"""
+                <div style="display: flex; justify-content: flex-end; margin: 12px 0;">
+                    <div style="background-color: #3a3a3a; color: #e0e0e0; padding: 12px 16px; border-radius: 18px 18px 4px 18px; max-width: 70%; word-wrap: break-word;">
+                        {html_escape.escape(str(content))}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             else:
-                with st.chat_message(role):
-                    st.write(content)
+                st.markdown(content)
+        
+        # Mostrar sugerencias después del último mensaje del asistente
+        if st.session_state.follow_up_suggestions and not st.session_state.pending_questions:
+            render_suggestions(st.session_state.follow_up_suggestions)
 
-# ============================================
+    # ============================================
     # MODO PREGUNTAS (Human-in-the-Loop)
     # ============================================
     if st.session_state.pending_questions:
         st.divider()
         
-        # Mostrar el contenido del worker ANTES de las preguntas
-        # PERO filtrar si el contenido es solo las preguntas formateadas
         pending_content = st.session_state.get("pending_content", "")
         
-        # Detectar si el contenido es solo el wizard de preguntas (no mostrarlo)
-        is_just_questions = any(indicator in pending_content for indicator in [
-            "Paso 1 de",
+        if pending_content in [None, "None", "null", ""]:
+            pending_content = ""
+        
+        is_just_questions = not pending_content or any(indicator in str(pending_content) for indicator in [
+            "Paso 1 de 3",
             "[●○○]",
             "[○○○]", 
-            "📍 Paso",
-            "🔧 Información de diagnóstico\nNecesito",
-            "🏭 Diagnóstico del Laboratorio\n",
-            "📋 Información adicional\n",
+            "Pregunta 1: ¿",
+            "Pregunta 2: ¿",
+            "Necesito saber qué estación presenta problemas",
+            '"question_set"',
+            '"wizard_mode"',
         ])
         
-        # Solo mostrar si hay contenido útil (ej: errores encontrados)
         if pending_content and not is_just_questions:
-            with st.chat_message("assistant"):
-                st.markdown(pending_content)
-        
-        st.subheader("📋 Necesito más información")
+            st.markdown(pending_content)
         
         all_answered = render_questions_wizard()
         
         if all_answered:
-            # Todas las preguntas respondidas, enviar al agente
             formatted_answers = format_answers_for_agent(
                 st.session_state.pending_questions,
                 st.session_state.question_answers
             )
             
-            # Mostrar resumen de respuestas
-            st.success("✅ ¡Gracias! Procesando tu información...")
+            st.success("Sentinel is processing your responses...")
             
-            with st.expander("Ver respuestas enviadas"):
+            with st.expander("View submitted answers"):
                 st.markdown(formatted_answers)
             
-            # Enviar como Command(resume)
             try:
                 config = get_langgraph_config()
                 payload = Command(resume=formatted_answers)
@@ -664,66 +1047,105 @@ def main():
                 for event in graph.stream(payload, config=config, stream_mode="updates"):
                     all_graph_events.append(event)
                     
-                    # Extraer eventos de log
                     for node_name in ["bootstrap", "plan", "route", "synthesize", "chat",
                                      "research", "tutor", "troubleshooting", "summarizer"]:
                         if node_name in event and isinstance(event[node_name], dict):
                             node_events = event[node_name].get("events", [])
                             all_events.extend(node_events)
                 
-                # Guardar logs
-                for evt in all_events:
+                if all_events:
+                    logs_html = ""
+                    for idx, evt in enumerate(all_events):
+                        is_last = (idx == len(all_events) - 1)
+                        logs_html += format_event_display(evt, is_last, is_loading=False)
+                    
                     st.session_state.messages.append({
                         "role": "system",
-                        "content": format_event_display(evt),
-                        "type": "log",
+                        "content": logs_html,
+                        "type": "logs_group",
                     })
                 
-                # Extraer mensajes finales
+                # Extraer sugerencias
+                suggestions = extract_suggestions_from_events(all_graph_events)
+                # Si no hay sugerencias, agregar defaults post-HITL
+                if not suggestions:
+                    suggestions = [
+                        "Check the status of other stations",
+                        "Run a diagnostic on similar equipment",
+                        "View the complete lab overview"
+                    ]
+                st.session_state.follow_up_suggestions = suggestions
+                
+                # Extraer imágenes
+                images = extract_images_from_events(all_graph_events)
+                
                 messages, _ = extract_messages_from_events(all_graph_events)
                 for msg in messages:
                     if msg:
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": msg,
-                            "type": "text",
-                        })
+                        cleaned_msg = clean_message_content(msg)
+                        if cleaned_msg and not cleaned_msg.startswith('<div'):
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": cleaned_msg,
+                                "type": "text",
+                            })
                 
-                # Limpiar estado de preguntas
+                # Agregar imágenes como mensaje separado
+                if images:
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": images,
+                        "type": "images",
+                    })
+                
                 st.session_state.pending_questions = []
-                st.session_state.pending_content = ""  # Limpiar contenido también
+                st.session_state.pending_content = ""
                 st.session_state.question_answers = {}
                 st.session_state.current_question_idx = 0
                 st.session_state.pending_interrupt = None
                 
-                logger.info("✅ Respuestas procesadas")
+                logger.info("Respuestas procesadas")
                 
             except Exception as e:
                 logger.error(f"Error: {str(e)}")
-                st.error(f"❌ Error: {str(e)}")
+                st.error(f"Error: {str(e)}")
             
             st.rerun()
         
-        return  # No mostrar input normal mientras hay preguntas pendientes
+        return
 
     # ============================================
     # INPUT NORMAL
     # ============================================
     st.divider()
-    user_input = st.chat_input(
-        "Escribe tu mensaje...",
-        disabled=st.session_state.is_loading,
-    )
+    
+    # Manejar sugerencia clickeada
+    if "pending_suggestion" in st.session_state and st.session_state.pending_suggestion:
+        user_input = st.session_state.pending_suggestion
+        st.session_state.pending_suggestion = None
+    else:
+        user_input = st.chat_input(
+            "Type your message...",
+            disabled=st.session_state.is_loading,
+        )
 
     if user_input:
         st.session_state.is_loading = True
+        st.session_state.follow_up_suggestions = []  # Limpiar sugerencias anteriores
         
-        # Añadir mensaje del usuario
         st.session_state.messages.append({
             "role": "user",
             "content": user_input,
             "type": "text",
         })
+        
+        st.markdown(f"""
+        <div style="display:flex;justify-content:flex-end;margin:12px 0;">
+            <div style="background-color:#3a3a3a;color:#e0e0e0;padding:12px 16px;border-radius:18px 18px 4px 18px;max-width:70%;word-wrap:break-word;">
+                {html_escape.escape(str(user_input))}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         try:
             config = get_langgraph_config()
@@ -740,93 +1162,134 @@ def main():
             interrupted = False
             extracted_questions = []
 
-            with st.spinner("🔄 Procesando..."):
-                for event in graph.stream(payload, config=config, stream_mode="updates"):
-                    all_graph_events.append(event)
+            events_placeholder = st.empty()
+            
+            for event in graph.stream(payload, config=config, stream_mode="updates"):
+                all_graph_events.append(event)
 
-                    # Detectar interrupt
-                    if isinstance(event, dict) and "__interrupt__" in event:
-                        interrupted = True
-                        st.session_state.pending_interrupt = True
+                if isinstance(event, dict) and "__interrupt__" in event:
+                    interrupted = True
+                    st.session_state.pending_interrupt = True
+                    
+                    for prev_event in all_graph_events:
+                        questions = extract_questions_from_event(prev_event)
+                        if questions:
+                            extracted_questions = questions
+                            break
+                    
+                    break
+
+                for node_name in ["bootstrap", "plan", "route", "synthesize", "chat",
+                                 "research", "tutor", "troubleshooting", "summarizer"]:
+                    if node_name in event and isinstance(event[node_name], dict):
+                        node_events = event[node_name].get("events", [])
+                        for evt in node_events:
+                            all_events.append(evt)
                         
-                        # Buscar preguntas estructuradas en los eventos anteriores
-                        for prev_event in all_graph_events:
-                            questions = extract_questions_from_event(prev_event)
-                            if questions:
-                                extracted_questions = questions
-                                break
-                        
-                        break
+                        questions = event[node_name].get("clarification_questions", [])
+                        if questions:
+                            extracted_questions = questions
+                
+                if all_events:
+                    events_parts = []
+                    for idx, evt in enumerate(all_events):
+                        is_last = (idx == len(all_events) - 1)
+                        events_parts.append(format_event_display(evt, is_last, is_loading=True))
+                    
+                    events_html = "".join(events_parts)
+                    events_placeholder.markdown(events_html, unsafe_allow_html=True)
+            
+            events_placeholder.empty()
 
-                    # Extraer eventos de log
-                    for node_name in ["bootstrap", "plan", "route", "synthesize", "chat",
-                                     "research", "tutor", "troubleshooting", "summarizer"]:
-                        if node_name in event and isinstance(event[node_name], dict):
-                            node_events = event[node_name].get("events", [])
-                            all_events.extend(node_events)
-                            
-                            # Extraer preguntas si existen
-                            questions = event[node_name].get("clarification_questions", [])
-                            if questions:
-                                extracted_questions = questions
-
-            # Guardar logs
             if all_events:
-                st.session_state.messages.append({"role": "system", "content": "", "type": "separator"})
-                for evt in all_events:
-                    st.session_state.messages.append({
-                        "role": "system",
-                        "content": format_event_display(evt),
-                        "type": "log",
-                    })
+                logs_html = ""
+                for idx, evt in enumerate(all_events):
+                    is_last = (idx == len(all_events) - 1)
+                    logs_html += format_event_display(evt, is_last, is_loading=False)
+                
+                st.session_state.messages.append({
+                    "role": "system",
+                    "content": logs_html,
+                    "type": "logs_group",
+                })
 
             if interrupted and extracted_questions:
-                # Extraer el contenido del worker que generó las preguntas
                 worker_content = ""
                 for event in all_graph_events:
-                    for node_name in ["troubleshooting", "research", "tutor", "chat"]:
+                    for node_name in ["chat", "research", "tutor", "troubleshooting", "summarizer"]:
                         if node_name in event and isinstance(event[node_name], dict):
-                            # Buscar en worker_outputs
-                            worker_outputs = event[node_name].get("worker_outputs", [])
-                            for wo in worker_outputs:
-                                if isinstance(wo, dict) and wo.get("content"):
-                                    worker_content = wo.get("content", "")
-                                    break
-                            if worker_content:
-                                break
-                    if worker_content:
-                        break
+                            msgs = event[node_name].get("messages", [])
+                            if msgs:
+                                for m in msgs:
+                                    content = extract_message_content(m)
+                                    if content:
+                                        worker_content = content
+                                        break
                 
-                # Activar modo preguntas
+                skip_content_indicators = [
+                    "Pregunta 1: ¿",
+                    "Pregunta 2: ¿",
+                    "Pregunta 3: ¿",
+                    "Necesito saber qué estación presenta problemas",
+                    "Por favor, proporciona la información solicitada",
+                    '"question_set"',
+                    '"wizard_mode"',
+                    "Respuestas del usuario:\n",
+                    "- Estación 1\n- Estación 2\n",
+                ]
+                
+                should_skip_content = False
+                if not worker_content or str(worker_content).strip() in ["None", "null", ""]:
+                    should_skip_content = True
+                else:
+                    for indicator in skip_content_indicators:
+                        if indicator in str(worker_content):
+                            should_skip_content = True
+                            break
+                
                 st.session_state.pending_questions = extracted_questions
-                st.session_state.pending_content = worker_content  # NUEVO: Guardar contenido
+                st.session_state.pending_content = "" if should_skip_content else worker_content
                 st.session_state.current_question_idx = 0
                 st.session_state.question_answers = {}
-                logger.info(f"📋 {len(extracted_questions)} preguntas pendientes")
+                
+                logger.info(f"Preguntas pendientes: {len(extracted_questions)}")
+            
             else:
-                # Extraer mensajes finales
-                messages, _ = extract_messages_from_events(all_graph_events)
+                # Extraer sugerencias de seguimiento
+                suggestions = extract_suggestions_from_events(all_graph_events)
+                st.session_state.follow_up_suggestions = suggestions
+                
+                # Extraer imágenes
+                images = extract_images_from_events(all_graph_events)
+
+                messages, final_state = extract_messages_from_events(all_graph_events)
                 for msg in messages:
                     if msg:
-                        existing = [m.get("content") for m in st.session_state.messages if m.get("type") == "text"]
-                        if msg not in existing:
+                        cleaned_msg = clean_message_content(msg)
+                        if cleaned_msg and not cleaned_msg.startswith('<div'):
                             st.session_state.messages.append({
                                 "role": "assistant",
-                                "content": msg,
+                                "content": cleaned_msg,
                                 "type": "text",
                             })
                 
-                logger.info("✅ Procesamiento completado")
+                # Agregar imágenes como mensaje separado
+                if images:
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": images,
+                        "type": "images",
+                    })
+            
+            st.session_state.is_loading = False
+            logger.info("Procesamiento completado")
 
         except Exception as e:
             logger.error(f"Error: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            st.error(f"❌ Error: {str(e)}")
-
-        finally:
+            st.error(f"Error: {str(e)}")
             st.session_state.is_loading = False
-            st.rerun()
+        
+        st.rerun()
 
 
 if __name__ == "__main__":

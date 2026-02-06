@@ -143,16 +143,11 @@ class AgentState(TypedDict):
     pending_context: Annotated[Dict[str, Any], merge_dicts]  # Contexto para siguiente worker
     
     # ==========================================
-    # 4. HUMAN-IN-THE-LOOP (NUEVO) - Con soporte Wizard
+    # 4. HUMAN-IN-THE-LOOP (NUEVO)
     # ==========================================
     needs_human_input: bool  # True si hay que pausar para input del usuario
-    clarification_questions: List[Any]  # Preguntas (strings o ClarificationQuestion dicts)
-    # NOTA: El estado del wizard se almacena en pending_context["wizard_state"]
-    # pending_context también puede contener:
-    #   - "question_set": QuestionSet serializado para iniciar wizard
-    #   - "wizard_responses": Respuestas estructuradas del wizard
-    #   - "wizard_completed": True si el wizard se completó
-    #   - "wizard_cancelled": True si el usuario canceló
+    clarification_questions: List[str]  # Preguntas para el usuario
+    follow_up_suggestions: List[str]  # Sugerencias de seguimiento generadas por el agente
     
     # ==========================================
     # 4.5. ANÁLISIS DE INTENCIÓN (NUEVO)
@@ -172,7 +167,6 @@ class AgentState(TypedDict):
     task_type: str  # Tipo de tarea: 'tutor', 'troubleshooting', 'research', 'summarizer'
     user_name: str  # Nombre del usuario
     customer_id: Optional[str]  # ID del cliente para verificación
-    learning_style: Dict[str, Any]  # Estilo de aprendizaje del usuario (JSONB del profile)
     
     # ==========================================
     # 7. RESULTADOS DE WORKERS (Legacy/Compatibilidad)
@@ -206,6 +200,7 @@ STATE_DEFAULTS: Dict[str, Any] = {
     # Human-in-the-loop
     "needs_human_input": False,
     "clarification_questions": [],
+    "follow_up_suggestions": [],
     
     # Intent analysis
     "intent_analysis": {},
@@ -219,7 +214,6 @@ STATE_DEFAULTS: Dict[str, Any] = {
     "task_type": "",
     "user_name": "Usuario",
     "customer_id": None,
-    "learning_style": {},
     
     # Resultados legacy
     "research_result": None,

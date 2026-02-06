@@ -68,14 +68,14 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
     services_status = init_services()
     
     if services_status["supabase_connected"]:
-        events.append(event_read("bootstrap", "✅ Supabase conectado"))
+        events.append(event_read("bootstrap", " Supabase conectado"))
     else:
-        events.append(event_error("bootstrap", "⚠️ Supabase no disponible"))
+        events.append(event_error("bootstrap", " Supabase no disponible"))
     
     if services_status["embeddings_ready"]:
-        events.append(event_read("bootstrap", "✅ Embeddings listos"))
+        events.append(event_read("bootstrap", " Embeddings listos"))
     else:
-        events.append(event_error("bootstrap", "⚠️ Embeddings no disponibles"))
+        events.append(event_error("bootstrap", " Embeddings no disponibles"))
     
     # ==========================================
     # 4. Inicializar orchestration si no existe
@@ -95,7 +95,7 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
     # ==========================================
     # 5. Registrar evento de inicio
     # ==========================================
-    bootstrap_event = event_read("bootstrap", "🚀 Estado inicializado correctamente")
+    bootstrap_event = event_read("bootstrap", " Estado inicializado correctamente")
     events.append(bootstrap_event)
     
     # Añadir eventos al patch
