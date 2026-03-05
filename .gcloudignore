@@ -1,0 +1,29 @@
+# Virtual environments & caches
+.venv/
+__pycache__/
+*.pyc
+
+# Git
+.git/
+.gitignore
+
+# IDE & tooling
+.claude/
+.env
+.cursor/
+
+# Not needed for API server
+app/
+assets/
+documents/
+scripts/
+langgraph.json
+pyproject.toml
+fix_llm_mapping.py
+env.yaml
+CLAUDE.md
+nul
+
+# OS files
+*.tmp
+Thumbs.db
