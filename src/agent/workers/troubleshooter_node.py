@@ -2282,6 +2282,10 @@ Could you please rephrase your request?"""
             "events": events,
         }
     
+    # Skip clarification for troubleshoot mode — equipment context already provided
+    if state.get("interaction_mode", "").lower() == "troubleshoot":
+        already_clarified = True
+
     if not already_clarified and not is_command:
         question_set = None
         
