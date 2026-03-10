@@ -53,3 +53,14 @@ def event_route(source: str, content: str, route: str = "", metadata: Optional[D
     meta = metadata or {}
     meta["route"] = route
     return _create_event("route", source, content, meta)
+
+
+def event_narration(source: str, content: str, phase: str = "thinking") -> Dict[str, Any]:
+    """Evento de narración chain-of-thought para mostrar en el chat del usuario."""
+    return {
+        "type": "narration",
+        "source": source,
+        "content": content,
+        "phase": phase,
+        "timestamp": datetime.utcnow().isoformat(),
+    }

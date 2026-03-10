@@ -1,11 +1,9 @@
 """
-bootstrap.py - Inicialización del estado y verificación de herramientas
+bootstrap.py 
+---------------------------------------------------------
+- Inicializamos el estado y verificamos las herramientas
+---------------------------------------------------------
 
-CAMBIOS PRINCIPALES:
-1. Usa STATE_DEFAULTS de state.py para consistencia
-2. Inicializa campos de orchestration multi-step
-3. NO inyecta supabase/embeddings al state (no son serializables)
-4. Usa services.py para inicializar clientes
 """
 import json
 import os
@@ -24,6 +22,32 @@ def _as_event_list(evt) -> List[Dict[str, Any]]:
     if isinstance(evt, list):
         return evt
     return [evt]
+
+
+def _recall_similar_diagnostics(user_message: str, team_id: str = None, limit: int = 3) -> List[Dict]:
+    """Retrieve similar past diagnostics using embedding similarity search."""
+    try:
+        from src.agent.services import get_supabase, get_embeddings
+        sb = get_supabase()
+        emb = get_embeddings()
+        if not sb or not emb:
+            return []
+
+        query_embedding = emb.embed_query(user_message)
+
+        result = sb.schema("lab").rpc("match_diagnostics", {
+            "query_embedding": query_embedding,
+            "match_threshold": 0.7,
+            "match_count": limit,
+            "filter_team_id": team_id,
+        }).execute()
+
+        if result and result.data:
+            return result.data
+        return []
+    except Exception as e:
+        logger.warning("bootstrap", f"Diagnostic recall failed: {e}")
+        return []
 
 
 def bootstrap_node(state: AgentState) -> Dict[str, Any]:
@@ -52,50 +76,21 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
     # ==========================================
     interaction_mode = state.get("interaction_mode", "chat")
 
-    if interaction_mode == "practice" and state.get("automation_md_content"):
-        robot_state = {}
-        try:
-            from src.agent.services import get_supabase
-            sb = get_supabase()
-            if sb:
-                r = sb.schema("lab").from_("robot_state") \
-                    .select("robot_ip, robot_name, state, mode, error_code, warning_code, tcp_x, tcp_y, tcp_z, joints, is_connected, last_seen") \
-                    .eq("is_connected", True) \
-                    .execute()
-                if r and r.data:
-                    robots = {}
-                    for row in r.data:
-                        ip = row["robot_ip"]
-                        robots[ip] = {
-                            "name": row.get("robot_name", ip),
-                            "ip": ip,
-                            "state": row.get("state"),
-                            "mode": row.get("mode"),
-                            "error_code": row.get("error_code", 0),
-                            "warning_code": row.get("warning_code", 0),
-                            "tcp": {
-                                "x": row.get("tcp_x"), "y": row.get("tcp_y"), "z": row.get("tcp_z"),
-                            },
-                            "joints": row.get("joints", []),
-                            "is_connected": True,
-                            "last_seen": row.get("last_seen"),
-                        }
-                    robot_state = robots
-        except Exception:
-            pass
+    if interaction_mode == "practice" and state["automation_id"]:
+        # Use in-memory bridge connections instead of Supabase robot_state table.
+        # The real robot state is only known by the connected bridge (WebSocket).
+        from src.agent.shared_state import get_connected_robots
+        connected = get_connected_robots()
 
-        logger.node_end("bootstrap", {"status": "fast_path_practice"})
+        logger.node_end("bootstrap", {"status": "fast_path_practice", "connected_devices": len(connected)})
         return {
-            "robot_state": robot_state,
-            "events": [event_read("bootstrap", "Practice fast-path: state reused")],
+            "robot_state": connected,
+            "active_devices": connected,
+            "practice_session_active": bool(connected),
+            "events": [event_read("bootstrap", f"Practice fast-path: {len(connected)} devices connected")],
         }
 
-    # ==========================================
-    # 1. Asegurar canal de eventos
-    # ==========================================
-    if "events" not in state or state.get("events") is None:
-        patches["events"] = []
-    
+
     # ==========================================
     # 2. Inicializar campos faltantes con DEFAULTS
     # ==========================================
@@ -179,17 +174,16 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
         # --- Cargar robot state desde lab.robot_state ---
         try:
             robot_result = sb.schema("lab").from_("robot_state") \
-                .select("robot_ip, robot_name, state, mode, error_code, warning_code, tcp_x, tcp_y, tcp_z, tcp_roll, tcp_pitch, tcp_yaw, joints, velocities, efforts, temperatures, currents, safety_zone, is_connected, last_seen") \
+                .select("id, state, mode, error_code, warning_code, tcp_x, tcp_y, tcp_z, tcp_roll, tcp_pitch, tcp_yaw, joints, velocities, efforts, temperatures, currents, is_connected, space_id") \
                 .eq("is_connected", True) \
                 .execute()
 
             if robot_result.data:
                 robots = {}
                 for r in robot_result.data:
-                    ip = r["robot_ip"]
-                    robots[ip] = {
-                        "name": r.get("robot_name", ip),
-                        "ip": ip,
+                    robot_id = str(r["id"])
+                    robots[robot_id] = {
+                        "id": robot_id,
                         "state": r.get("state"),
                         "mode": r.get("mode"),
                         "error_code": r.get("error_code", 0),
@@ -203,9 +197,8 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
                         "efforts": r.get("efforts", []),
                         "temperatures": r.get("temperatures", []),
                         "currents": r.get("currents", []),
-                        "safety_zone": r.get("safety_zone"),
                         "is_connected": True,
-                        "last_seen": r.get("last_seen"),
+                        "space_id": r.get("space_id"),
                     }
                 patches["robot_state"] = robots
             else:
@@ -236,16 +229,54 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
                 logger.warning("bootstrap", f"Failed to load user profile: {e}")
 
     # ==========================================
-    # 6. Registrar evento de inicio
+    # 6. Recall similar diagnostics (cross-session memory)
     # ==========================================
-    bootstrap_event = event_read("bootstrap", " Estado inicializado correctamente")
-    events.append(bootstrap_event)
-    
-    # Añadir eventos al patch
-    if "events" in patches:
-        patches["events"].extend(events)
-    else:
-        patches["events"] = events
+    if interaction_mode in ("chat", "agent", "code"):
+        user_msg = ""
+        for m in reversed(state.get("messages", [])):
+            if hasattr(m, "type") and m.type == "human":
+                user_msg = (m.content or "").strip()
+                break
+            if isinstance(m, dict) and m.get("role", m.get("type")) in ("user", "human"):
+                user_msg = (m.get("content") or "").strip()
+                break
+
+        if user_msg and len(user_msg) > 20:
+            team_id = state.get("team_id")
+            similar = _recall_similar_diagnostics(user_msg, team_id=team_id)
+            if similar:
+                recall_text = "\n".join([
+                    f"- [{d.get('severity', '?')}] {d.get('user_query', '')[:100]} → {d.get('diagnosis', '')[:200]}"
+                    + (f" (Lesson: {d['lesson_learned'][:100]})" if d.get("lesson_learned") else "")
+                    for d in similar
+                ])
+                pending = patches.get("pending_context") or state.get("pending_context") or {}
+                pending["diagnostic_recall"] = {
+                    "count": len(similar),
+                    "entries": similar,
+                    "summary": recall_text,
+                }
+                patches["pending_context"] = pending
+                events.append(event_read("bootstrap", f"Recalled {len(similar)} similar diagnostics"))
+
+    # ==========================================
+    # 7. Populate active_devices from bridge connections
+    # ==========================================
+    try:
+        from src.agent.shared_state import get_connected_robots
+        active = get_connected_robots()
+    except ImportError:
+        active = {}
+    patches["active_devices"] = active
+
+    # ==========================================
+    # 8. Registrar evento de inicio
+    # ==========================================
+    events.append(event_read("bootstrap", " Estado inicializado correctamente"))
+
+    # operator.add en el reducer se encarga de concatenar con events previos.
+    # Solo retornamos los events NUEVOS de este turn.
+    patches["events"] = events
     
     logger.node_end("bootstrap", {
         "status": "success",

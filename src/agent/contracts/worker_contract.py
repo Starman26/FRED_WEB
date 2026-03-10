@@ -76,7 +76,7 @@ class WorkerOutput(BaseModel):
     """
     
     # Identificación
-    worker: Literal["chat", "research", "tutor", "troubleshooting", "summarizer", "robot_operator", "analysis"]
+    worker: Literal["chat", "research", "tutor", "troubleshooting", "summarizer", "robot_operator", "analysis", "practice"]
     task_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     
     # Estado del resultado
@@ -308,7 +308,25 @@ def create_wizard_context_output(
 
 class WorkerOutputBuilder:
     """Factory para construir WorkerOutput de forma más ergonómica"""
-    
+
+    @staticmethod
+    def chat(
+        content: str,
+        summary: str = "",
+        confidence: float = 0.8,
+        status: str = "ok",
+        **kwargs
+    ) -> WorkerOutput:
+        """Construye output para chat worker"""
+        return WorkerOutput(
+            worker="chat",
+            status=status,
+            summary=summary or "Conversación general",
+            content=content,
+            confidence=confidence,
+            **kwargs
+        )
+
     @staticmethod
     def research(
         content: str,

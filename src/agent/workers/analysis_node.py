@@ -21,7 +21,7 @@ from src.agent.contracts.worker_contract import WorkerOutputBuilder
 from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report
 
-from src.agent.tools.analyst_tools import ANALYST_TOOLS
+from src.agent.tools.db_tools.analyst_tools import ANALYST_TOOLS
 
 MAX_TOOL_ITERATIONS = 15
 ANALYSIS_SYSTEM_PROMPT = """You are ORION's Data Analyst. You execute SQL queries on a PostgreSQL database (Supabase).
@@ -240,6 +240,9 @@ def analysis_node(state: AgentState) -> Dict[str, Any]:
     logger.node_start("analysis_node", {})
     events = [event_execute("analysis", "Analyzing data...")]
 
+    from src.agent.utils.stream_utils import get_worker_stream
+    stream = get_worker_stream(state, "analysis")
+
     user_message = get_last_user_message(state)
     user_name = state.get("user_name", "User")
     model_name = state.get("llm_model") or os.getenv("DEFAULT_MODEL", "gemini-2.0-flash")
@@ -368,6 +371,7 @@ You already have a base answer above from another worker. Your job is to:
     executed_queries = set()  # Track query_sql queries to detect repeats
     consecutive_failures = 0
     force_stop = False
+    stream.tool("sql_query", "Explorando estructura de la base de datos...")
     logger.info("analysis_node", f"Starting tool loop, max_iterations={MAX_TOOL_ITERATIONS}, tool_map keys={list(tool_map.keys())}")
 
     iteration = 0
@@ -403,6 +407,10 @@ You already have a base answer above from another worker. Your job is to:
 
             events.append(event_execute("analysis", f"Running {tool_name}..."))
             logger.info("analysis_node", f"Tool call: {tool_name}(args={tool_args})")
+            if tool_name == "query_sql":
+                stream.tool("sql_execute", "Ejecutando consulta en la base de datos...")
+            elif tool_name in ("list_tables", "describe_table", "list_rpc_functions"):
+                stream.tool(tool_name, f"Explorando esquema: {tool_name}...")
 
             # Detect repeated query_sql calls
             if tool_name == "query_sql":
@@ -434,6 +442,9 @@ You already have a base answer above from another worker. Your job is to:
                             logger.info("analysis_node", f"query_sql failed, consecutive_failures={consecutive_failures}")
                         else:
                             consecutive_failures = 0
+                            row_count = result.get("row_count", 0)
+                            if row_count:
+                                stream.found(f"Obtuve {row_count} registros, procesando...")
                 except Exception as e:
                     tb_tool = traceback.format_exc()
                     logger.error("analysis_node", f"Tool {tool_name} failed: {type(e).__name__}: {e}\n{tb_tool}")
@@ -485,6 +496,7 @@ You already have a base answer above from another worker. Your job is to:
         flags=re.DOTALL,
     ).strip()
 
+    stream.status("Preparando visualizacion de datos...")
     # Safety net: convert any remaining markdown tables to ==CHART== blocks
     result_text = _convert_markdown_tables_to_charts(result_text)
 

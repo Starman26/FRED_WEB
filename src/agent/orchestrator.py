@@ -13,17 +13,194 @@ from typing import Dict, Any, List, Optional
 import re
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from src.agent.state import AgentState
+from src.agent.state import AgentState, RESET_WORKER_OUTPUTS
 from src.agent.contracts.worker_contract import WorkerOutput, EvidenceItem
 from src.agent.utils.logger import logger
-from src.agent.utils.run_events import event_plan, event_route, event_report, event_error
+from src.agent.utils.run_events import event_plan, event_route, event_report, event_error, event_narration
+from src.agent.interaction_modes import get_truth_hierarchy, get_shared_rules
 
 
-VALID_WORKERS = {"chat", "research", "tutor", "troubleshooting", "summarizer", "robot_operator", "analysis"}
+VALID_WORKERS = {"chat", "research", "tutor", "troubleshooting", "summarizer", "robot_operator", "analysis", "practice"}
+
+_WORKER_DESC = {
+    "research": "Searching technical documents",
+    "tutor": "Preparing explanation",
+    "troubleshooting": "Running diagnostics",
+    "robot_operator": "Controlling robot",
+    "analysis": "Analyzing data",
+    "chat": "Thinking",
+    "summarizer": "Compressing memory",
+    "practice": "practice — Guided hands-on session with bridge-in-the-loop (BITL)",
+}
 
 
 # ============================================
-# ADAPTIVE ROUTER (replaces orchestrator_route_node)
+# SYNTHESIS PROMPTS
+# ============================================
+
+# Shared synthesis base — injected into all synth prompts
+_SYNTH_BASE = f"""
+{get_truth_hierarchy()}
+
+{get_shared_rules()}
+
+## CONFLICT RESOLUTION
+- If real-time diagnostics and documentation disagree, state both and trust the real-time data
+- If two workers provide contradictory information, explain the conflict briefly and state which source you trust more
+- Direct tool output > generalized explanation
+- If conflict remains, say uncertainty clearly — never invent certainty
+"""
+
+SYNTH_PROMPT_CHAT = """You are ORION, synthesizing outputs from multiple agents into one final response for the user.
+
+## USER QUESTION
+{{user_question}}
+
+## AGENT OUTPUTS
+{{raw_data}}
+{{sources_text}}
+
+## YOUR JOB
+Produce a single response that directly answers the user's question using the most reliable information available.
+
+{base}
+
+## SYNTHESIS RULES
+- Cover every important part of the user's request — if they asked about X AND Y, cover both
+- Integrate outputs into one coherent answer — do not dump separate worker blocks
+- If one source has real-time operational data and another has documentation, prioritize real-time and use docs as supporting context
+- Do not repeat the same point in different words
+- Do not narrate the internal multi-agent process unless it helps answer the question
+- Present only the useful conclusion
+
+## RESPONSE STYLE
+Adapt structure to user intent:
+- Yes/No question → answer immediately in the first line
+- How-to question → concise steps
+- What/Why question → direct explanation first, then supporting detail
+- Status question → current state first, then relevant issues or next action
+- Troubleshooting question → diagnosis first, then recommended actions
+
+## FORMAT
+- Lead with the key answer using ==text== markers
+- ==+text== confirmed good status | ==-text== confirmed issue | ==~text== warning/partial risk | ==?text== uncertainty
+- Use clean Markdown only when it improves readability
+- Use short sections, not overly formal reports
+- Use numbered steps only for action sequences
+- Include sources after --- only if sources are available
+- Be concise but complete
+
+User name: {{user_name}}
+
+End with exactly 3 follow-up suggestions:
+---SUGGESTIONS---
+1. [suggestion]
+2. [suggestion]
+3. [suggestion]
+---END_SUGGESTIONS---
+
+Your synthesized response:""".format(base=_SYNTH_BASE)
+
+
+SYNTH_PROMPT_AGENT = """You are ORION, the live intelligent operating system of a manufacturing laboratory.
+
+You are not writing a report. You are giving a direct operational answer as the system itself.
+
+## USER QUESTION
+{{user_question}}
+
+## AVAILABLE DATA
+{{raw_data}}
+
+{base}
+
+## PRIORITY
+1. State the most important operational fact first
+2. If there is a problem, mention the problem before anything else
+3. If everything is normal, confirm normal status quickly
+4. If the data is incomplete, say exactly what you cannot confirm
+5. Prefer real observed state over interpretation
+
+## STRICT STYLE
+- FIRST PERSON only
+- Maximum 2 short sentences, 3 only if critical
+- No markdown headers, no bullets, no lists, no emojis
+- Natural, direct, technical
+- No repetition, no filler
+
+## EXAMPLES
+Good: "==-PLC on station 2 is offline.== I'm not seeing a valid response from the controller."
+Good: "==+All stations are currently healthy.== No active errors detected."
+Good: "Moved X +20mm. Current position: (120, 50, 200)."
+Bad:  "After reviewing the available information, I can confirm that station 2 appears to be experiencing a connectivity issue."
+Bad:  "I have successfully completed the requested operation. The new position is..."
+Bad:  "Certainly! Based on the data provided..."
+
+## NEVER
+- Never say "Certainly", "I'd be happy to", "Based on the information provided"
+- Never explain why you did something unless the user asks "why"
+- Never enumerate multiple options — pick the best one
+- Never use greetings or pleasantries
+
+Use ==text== to highlight only the most important fact.
+
+Your response:""".format(base=_SYNTH_BASE)
+
+
+SYNTH_PROMPT_VOICE = """You are ORION, the intelligent operating system of a manufacturing laboratory.
+Your response will be spoken aloud to an operator over voice.
+
+## USER QUESTION
+{{user_question}}
+
+## AVAILABLE DATA
+{{raw_data}}
+
+{base}
+
+## PRIMARY GOAL
+Give a spoken response that is immediately understandable, operationally useful, and easy to hear once.
+
+## SPEAKING PRIORITY
+1. Say the most important fact first
+2. If there is a problem, say the problem first
+3. If everything is fine, confirm that quickly
+4. If action is needed, mention only the next best action
+5. If uncertain, say exactly what is not confirmed
+
+## STRICT RULES
+- FIRST PERSON only
+- Maximum 2 short sentences, 3 only if absolutely necessary
+- No markdown, no bullets, no lists, no code formatting
+- No emojis, no special characters
+- No long numbers unless essential
+- No repeating the user's question
+- No formal writing, no report tone
+
+## VOICE STYLE
+- Sound like an expert operator on radio
+- Direct, calm, clear
+- Short spoken phrasing over written phrasing
+
+## EXAMPLES
+Good: "Station 4 is offline right now. Check the PLC network link first."
+Good: "All clear. No active errors on any station."
+Good: "Done. Robot moved to home position."
+Bad:  "After reviewing the available information, I can say that station 4 appears to be experiencing a connectivity-related issue that may require further diagnosis."
+Bad:  "Here's what I found: first, the PLC is showing... second, the network..."
+Bad:  "I'm pleased to inform you that all systems are operational."
+
+## NEVER
+- Never use markdown formatting of any kind
+- Never stack multiple details in one sentence
+- Never use formal or report-style language
+- Never enumerate options — give one clear answer
+
+Your voice response:""".format(base=_SYNTH_BASE)
+
+
+# ============================================
+# ADAPTIVE ROUTER
 # ============================================
 
 def _evaluate_worker_output(
@@ -51,7 +228,7 @@ def _evaluate_worker_output(
 
     remaining_plan = plan[current_step + 1:]
 
-    # RULE 1: Worker error crítico → ir directo a synthesize con lo que hay
+    # RULE 1: Worker error crítico → synthesize con lo que hay
     if status == "error":
         return {
             "action": "stop_early",
@@ -59,8 +236,7 @@ def _evaluate_worker_output(
             "modified_plan": None,
         }
 
-    # RULE 2: Research no encontró evidencia → quitar tutor del plan restante
-    # (tutor sin evidencia solo repite knowledge general, no agrega valor)
+    # RULE 2: Research sin evidencia → quitar tutor del plan
     if worker_name == "research" and len(evidence) == 0:
         if "tutor" in remaining_plan:
             new_remaining = [w for w in remaining_plan if w != "tutor"]
@@ -76,7 +252,7 @@ def _evaluate_worker_output(
                 "modified_plan": plan[: current_step + 1] + new_remaining,
             }
 
-    # RULE 3: Worker completó con alta confianza y no quedan más workers → stop early
+    # RULE 3: Alta confianza y plan completo → stop early
     if (
         status == "ok"
         and confidence >= 0.9
@@ -89,21 +265,20 @@ def _evaluate_worker_output(
             "modified_plan": None,
         }
 
-    # RULE 5: Research has gaps mentioning lab entities → add troubleshooting to get real data
+    # RULE 4: Research tiene gaps sobre entidades del lab → agregar troubleshooting
     if worker_name == "research" and "troubleshooting" not in remaining_plan:
         extra = last_output.get("extra", {})
         gaps = extra.get("gaps", []) if isinstance(extra, dict) else []
         if gaps:
-            import re as _re
             gap_text = " ".join(str(g) for g in gaps).lower()
-            if _re.search(r"estaci[oó]n|station|lab|equipo|plc|cobot|puerta|sensor", gap_text):
+            if re.search(r"estaci[oó]n|station|lab|equipo|plc|cobot|puerta|sensor", gap_text):
                 return {
                     "action": "add_worker",
                     "reason": f"Research gaps mention lab entities: {gaps[:2]}; adding troubleshooting for real data",
                     "modified_plan": plan[: current_step + 1] + ["troubleshooting"] + remaining_plan,
                 }
 
-    # RULE 4: Troubleshooter recomienda tutor via next_actions
+    # RULE 5: Troubleshooter recomienda tutor via next_actions
     if worker_name == "troubleshooting" and next_actions:
         for action_item in next_actions:
             if isinstance(action_item, dict):
@@ -116,7 +291,7 @@ def _evaluate_worker_output(
                         "modified_plan": plan[: current_step + 1] + remaining_plan + ["tutor"],
                     }
 
-    # Default: continue as planned
+    # Default: continue
     return {
         "action": "continue",
         "reason": f"{worker_name} completed ({status}, confidence={confidence:.2f}), advancing",
@@ -141,7 +316,10 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
     plan = state.get("orchestration_plan", [])
     current_step = state.get("current_step", 0)
     worker_outputs = state.get("worker_outputs", [])
-    pending_context = state.get("pending_context", {}) or {}
+    _raw_context = state.get("pending_context", {}) or {}
+    pending_context = dict(_raw_context)
+    if "evidence" in pending_context:
+        pending_context["evidence"] = list(pending_context["evidence"])
     state_questions = state.get("clarification_questions", [])
 
     events = [event_route("adaptive_router", "Evaluating worker output...", route="pending")]
@@ -174,8 +352,6 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
     if (has_user_clarification or wizard_completed) and not hitl_consumed:
         if current_worker_name:
             updated_outputs = [o for o in worker_outputs if o.get("status") != "needs_context"]
-            # Keep user_clarification so the worker can read it, but mark
-            # _hitl_consumed so the router won't re-trigger after the worker completes.
             cleaned_context = dict(pending_context)
             cleaned_context["_hitl_consumed"] = True
             return {
@@ -204,7 +380,7 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
         }
 
     # ══════════════════════════════════════════
-    # ADAPTIVE EVALUATION: inspect worker output quality
+    # ADAPTIVE EVALUATION
     # ══════════════════════════════════════════
     if last_output:
         evaluation = _evaluate_worker_output(last_output, plan, current_step)
@@ -214,6 +390,9 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
             f"Eval: {evaluation['reason']}",
             route=evaluation["action"],
         ))
+
+        if evaluation["action"] != "continue":
+            events.append(event_narration("router", evaluation["reason"], phase="routing"))
 
         if evaluation["action"] == "stop_early":
             logger.info("adaptive_router", f"Stop early: {evaluation['reason']}")
@@ -247,12 +426,18 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
         }
 
     # Pass evidence context to next worker
+    accumulated_evidence = list(pending_context.get("evidence", []))
     for output in worker_outputs:
         evidence = output.get("evidence", [])
         if evidence:
-            pending_context["evidence"] = pending_context.get("evidence", []) + evidence
+            accumulated_evidence.extend(evidence)
+    if accumulated_evidence:
+        pending_context["evidence"] = accumulated_evidence
 
     next_worker = plan[next_step]
+    worker_desc = _WORKER_DESC.get(next_worker, next_worker)
+    events.append(event_narration("router", f"{worker_desc}...", phase="transition"))
+
     return {
         "orchestration_plan": plan,
         "current_step": next_step,
@@ -270,7 +455,9 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
 
 def _strip_emojis(text: str) -> str:
     """Remove all emojis from text."""
+    # Known emojis used in the codebase
     text = re.sub(r"[🏭📍📝🖥️🤖📡⚠️✅❌🔴🟢🔒🚪▶️⏹️⚡🔍🛡️⛔🔧💡🎯📊📈📉🚀💻🔄🔁⏳⏱️🕐🎉👋🧠💬🆘🛑🔔📢📌🔗📎🗂️📋📄📃🔐🔑⭐🌟💫✨🎁🎊🏆🥇🥈🥉💰💸📞📧📬🌍🌎🌏🔌🔋⚙️🛠️🔩📐📏🧪🧬🔬🔭🩺💊🧯🚒🚑🏗️🏠🏢🏫🏥🏦]", "", text)
+    # Broad unicode emoji ranges
     emoji_pattern = re.compile(
         "["
         "😀-🙏"
@@ -293,12 +480,22 @@ def _strip_emojis(text: str) -> str:
     return text.strip()
 
 
-def _extract_suggestions(text: str) -> tuple:
-    """
-    Extract ---SUGGESTIONS--- block from text.
+def _strip_markdown(content: str) -> str:
+    """Remove all markdown/highlight formatting from text."""
+    content = re.sub(r"==([+\-~?])?(.+?)==", r"\2", content)
+    content = re.sub(r"#{1,6}\s*", "", content)
+    content = re.sub(r"\*\*(.+?)\*\*", r"\1", content)
+    content = re.sub(r"\*(.+?)\*", r"\1", content)
+    content = re.sub(r"`(.+?)`", r"\1", content)
+    content = re.sub(r"^[-•]\s*", "", content, flags=re.MULTILINE)
+    content = re.sub(r"\|.+\|", "", content)
+    content = re.sub(r"---+", "", content)
+    content = re.sub(r"\n{3,}", "\n\n", content)
+    return _strip_emojis(content)
 
-    Returns (clean_text, suggestions_list).
-    """
+
+def _extract_suggestions(text: str) -> tuple:
+    """Extract ---SUGGESTIONS--- block from text. Returns (clean_text, suggestions_list)."""
     if "---SUGGESTIONS---" not in text:
         return text, []
 
@@ -308,7 +505,6 @@ def _extract_suggestions(text: str) -> tuple:
 
     if len(parts) > 1:
         tail = parts[1]
-        # Remove the end marker if present
         if "---END_SUGGESTIONS---" in tail:
             tail = tail.split("---END_SUGGESTIONS---")[0]
         for line in tail.strip().splitlines():
@@ -324,7 +520,6 @@ def _extract_suggestions(text: str) -> tuple:
 def _persist_practice_updates(state: dict):
     """Persist automation progress and user profile updates to Supabase."""
     try:
-        import re
         from src.agent.services import get_supabase
         sb = get_supabase()
         if not sb:
@@ -366,17 +561,143 @@ def _persist_practice_updates(state: dict):
         logger.warning("orchestrator", f"Persist practice failed: {e}")
 
 
+def _save_diagnostic_history(state: dict, response_text: str):
+    """Save completed diagnosis to diagnostic_history for cross-session learning."""
+    try:
+        from src.agent.services import get_supabase
+        sb = get_supabase()
+        if not sb:
+            return
+
+        worker_outputs = state.get("worker_outputs", [])
+        if not worker_outputs:
+            return
+
+        # Solo guardar si hubo troubleshooting, analysis, o research
+        workers_used = [o.get("worker", "") for o in worker_outputs if isinstance(o, dict)]
+        if not any(w in ("troubleshooting", "analysis", "research") for w in workers_used):
+            return
+
+        # Extraer query del usuario
+        user_query = ""
+        for m in reversed(state.get("messages", [])):
+            if hasattr(m, "type") and m.type == "human":
+                user_query = (m.content or "")[:500]
+                break
+            if isinstance(m, dict) and m.get("role") in ("human", "user"):
+                user_query = (m.get("content") or "")[:500]
+                break
+
+        if not user_query:
+            return
+
+        # --- Extraer equipment_type ---
+        # Fuente 1: intent_analysis
+        intent = state.get("intent_analysis", {})
+        entities = intent.get("entities", {}) if isinstance(intent, dict) else {}
+        equipment_type = entities.get("equipment")
+
+        # Fuente 2: worker outputs extras
+        for output in worker_outputs:
+            if not isinstance(output, dict):
+                continue
+            extra = output.get("extra", {})
+            if isinstance(extra, dict):
+                if not equipment_type:
+                    equipment_type = extra.get("equipment_type")
+
+        # Fuente 3: pending_context
+        pending = state.get("pending_context", {}) or {}
+        if not equipment_type:
+            detection = pending.get("detection", {})
+            equipment_type = detection.get("equipment") if isinstance(detection, dict) else pending.get("detected_equipment")
+
+        # --- Extraer tools_used desde tool_execution_log ---
+        tool_log = state.get("tool_execution_log", [])
+        tools_used = list(set(
+            entry.get("tool", "") for entry in tool_log if isinstance(entry, dict) and entry.get("tool")
+        ))
+
+        # Fallback: extraer de worker outputs si tool_execution_log está vacío
+        if not tools_used:
+            for output in worker_outputs:
+                if not isinstance(output, dict):
+                    continue
+                extra = output.get("extra", {})
+                if isinstance(extra, dict) and extra.get("web_search_used"):
+                    tools_used.append("web_search")
+                if output.get("worker") == "troubleshooting":
+                    tools_used.append("troubleshooting_tools")
+
+        # --- Extraer actions_taken ---
+        actions_taken = [
+            {
+                "tool": entry.get("tool"),
+                "success": entry.get("success"),
+                "verified": entry.get("verified"),
+                "phase": entry.get("phase"),
+                "duration_ms": entry.get("duration_ms"),
+            }
+            for entry in tool_log
+            if isinstance(entry, dict) and entry.get("tool")
+        ]
+
+        # --- Extraer duration_ms total ---
+        total_duration = 0
+        for output in worker_outputs:
+            if isinstance(output, dict):
+                meta = output.get("metadata", {})
+                if isinstance(meta, dict):
+                    total_duration += meta.get("processing_time_ms", 0)
+
+        # --- Extraer evidence sources ---
+        evidence_sources = []
+        for output in worker_outputs:
+            if not isinstance(output, dict):
+                continue
+            for ev in output.get("evidence", []):
+                if isinstance(ev, dict):
+                    evidence_sources.append({
+                        "title": ev.get("title"),
+                        "page": ev.get("page"),
+                        "type": (ev.get("metadata") or {}).get("source_type", "internal"),
+                    })
+
+        # --- Build record ---
+        record = {
+            "session_id": state.get("_stream_session_id", ""),
+            "user_id": state.get("auth_user_id") or state.get("user_id"),
+            "team_id": state.get("team_id"),
+            "user_query": user_query,
+            "equipment_type": equipment_type,
+            "diagnosis": response_text[:2000],
+            "actions_taken": actions_taken if actions_taken else [],
+            "tools_used": tools_used if tools_used else [],
+            "evidence_sources": evidence_sources if evidence_sources else [],
+            "tokens_used": state.get("token_usage", 0),
+            "duration_ms": total_duration if total_duration > 0 else None,
+            "workers_used": workers_used,
+        }
+
+        # Remove None values (Supabase rejects explicit nulls for some columns)
+        record = {k: v for k, v in record.items() if v is not None}
+
+        sb.schema("lab").from_("diagnostic_history").insert(record).execute()
+        logger.info("orchestrator", f"Diagnostic saved: equipment={equipment_type}, station={station_number}, tools={len(tools_used)}, actions={len(actions_taken)}")
+
+    except Exception as e:
+        logger.warning("orchestrator", f"Failed to save diagnostic history: {e}")
+
+
 def synthesize_node(state: AgentState) -> Dict[str, Any]:
-    """Synthesizes worker outputs into a coherent response aligned with the user's question.
+    """Synthesizes worker outputs into a coherent response.
 
     LLM bypass conditions (saves 1 LLM call):
     - Single chat/tutor output without sources
-    - Single research output with evidence and confidence >= 0.7 (already self-synthesized)
+    - Single research output with evidence and confidence >= 0.7
+    - Single analysis output (already self-contained)
 
-    Modes:
-    - Agent: ultra-concise (1-2 lines, first person)
-    - Voice: no markdown, short spoken sentences
-    - Chat/Code: structured Markdown
+    Modes: agent, voice, chat/code, practice
     """
     logger.node_start("synthesize", {"outputs_count": len(state.get("worker_outputs", []))})
     events = [event_report("synthesize", "Combining results...")]
@@ -384,7 +705,7 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
     worker_outputs = state.get("worker_outputs", [])
     interaction_mode = state.get("interaction_mode", "chat").lower()
 
-    # ── Practice mode: bypass synthesis, persist updates ──
+    # - Practice mode: bypass synthesis, persist updates -
     if interaction_mode == "practice":
         _persist_practice_updates(state)
         if worker_outputs:
@@ -403,7 +724,7 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
             "done": False, "next": "END", "events": events,
         }
 
-    # ── Extract user's original question ──
+    # - Extract user's original question -
     user_message = ""
     for m in reversed(state.get("messages", [])):
         if isinstance(m, HumanMessage):
@@ -413,7 +734,7 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
             user_message = (m.get("content") or "").strip()
             break
 
-    # ── Collect worker data ──
+    # - Collect worker data -
     content_parts = []
     all_sources = set()
 
@@ -432,18 +753,17 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
 
     raw_data = "\n\n".join(content_parts)
 
-    # ── Decide if LLM synthesis is needed ──
+    # - Decide if LLM synthesis is needed -
     worker_names = {o.get("worker", "unknown") for o in worker_outputs}
 
-    # Bypass 1: Lightweight workers (chat, tutor) without sources
-    lightweight_workers = {"chat", "tutor"}
+    # Bypass: Lightweight workers (chat, tutor) without sources
     is_lightweight = (
         len(worker_outputs) == 1
-        and worker_names.issubset(lightweight_workers)
+        and worker_names.issubset({"chat", "tutor"})
         and not all_sources
     )
 
-    # Bypass 2: Solo research that already synthesized its answer with evidence
+    # Bypass: Solo research that already synthesized with evidence
     is_self_sufficient_research = (
         len(worker_outputs) == 1
         and worker_names == {"research"}
@@ -452,47 +772,65 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
         and len(worker_outputs[0].get("content", "")) > 100
     )
 
-    # Bypass 3: Analysis worker already produces a complete, self-contained response
+    # Bypass: Analysis worker (already produces complete response)
     is_analysis = (
         len(worker_outputs) == 1
         and worker_names == {"analysis"}
     )
 
+    # Troubleshooting-only: format but don't rewrite (user saw investigation in real-time)
+    is_troubleshoot_only = (
+        len(worker_outputs) == 1
+        and worker_names == {"troubleshooting"}
+    )
+
     skip_llm_synthesis = is_lightweight or is_self_sufficient_research or is_analysis
 
     synth_tokens = 0
-    if skip_llm_synthesis:
+    if is_troubleshoot_only:
+        # Skip LLM synthesis entirely — troubleshooter already formatted
+        ts_content = ""
+        for out in worker_outputs:
+            if isinstance(out, dict):
+                ts_content = out.get("content", "")
+            elif hasattr(out, "content"):
+                ts_content = out.content or ""
+        combined = ts_content
+        events.append(event_report("synthesize", "LLM bypass (troubleshoot pass-through)"))
+    elif skip_llm_synthesis:
         combined = content_parts[0].split("]: ", 1)[-1] if content_parts else ""
-        bypass_reason = "lightweight" if is_lightweight else "self-sufficient research"
+        bypass_reason = (
+            "lightweight" if is_lightweight
+            else "self-sufficient research" if is_self_sufficient_research
+            else "analysis"
+        )
         events.append(event_report("synthesize", f"LLM bypass ({bypass_reason})"))
     else:
         events.append(event_report("synthesize", f"Synthesizing ({', '.join(worker_names)})..."))
-        combined, synth_tokens = _synthesize_with_llm(user_message, raw_data, all_sources, state)
+        combined, synth_tokens = _synthesize_with_llm(
+            user_message, raw_data, all_sources, state,
+        )
 
-    # ── Mode-specific reformatting ──
-    if interaction_mode == "agent" and combined:
-        combined = _condense_for_agent_mode(combined, state)
-    elif interaction_mode == "voice" and combined:
-        combined = _condense_for_voice_mode(combined, state)
-    elif interaction_mode in ("chat", "code") and combined:
-        combined = _format_as_markdown(combined, state)
+    # - Mode-specific post-processing -
+    if interaction_mode in ("chat", "code") and combined:
+        combined = _format_as_markdown(combined)
 
-    # Extract suggestions from text (before stripping emojis/formatting)
+    # Extract suggestions before cleanup
     combined, extracted_suggestions = _extract_suggestions(combined)
-
-    # Strip emojis
     combined = _strip_emojis(combined)
 
-    # Use extracted suggestions if available, otherwise fall back to worker suggestions
-    # Analysis mode never generates suggestions
+    # Suggestions: analysis never generates them
     if interaction_mode == "analysis":
         follow_ups = []
     else:
         follow_ups = extracted_suggestions or state.get("follow_up_suggestions", [])
 
-    return {
-        "messages": [AIMessage(content=combined)],
-        "worker_outputs": [],
+    # Save diagnostic to history for cross-session learning
+    if interaction_mode not in ("practice",) and combined:
+        _save_diagnostic_history(state, combined)
+
+    base_return = {
+        "worker_outputs": RESET_WORKER_OUTPUTS,
         "pending_context": {},
         "clarification_questions": [],
         "orchestration_plan": [],
@@ -505,84 +843,72 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
         "token_usage": synth_tokens,
     }
 
+    # Always emit the final formatted message
+    base_return["messages"] = [AIMessage(content=combined)]
+    return base_return
+
 
 def _synthesize_with_llm(
     user_question: str,
     raw_data: str,
     sources: set,
     state: Dict,
-) -> str:
-    """Uses LLM to synthesize multiple worker outputs into a coherent answer."""
+) -> tuple:
+    """Uses LLM to synthesize worker outputs. Returns (text, token_count)."""
     user_name = state.get("user_name", "User")
+    interaction_mode = state.get("interaction_mode", "chat").lower()
 
     sources_text = ""
     if sources:
-        sources_text = "\n\nFuentes disponibles:\n" + "\n".join(f"- {s}" for s in sorted(sources))
+        sources_text = "\nFuentes disponibles:\n" + "\n".join(f"- {s}" for s in sorted(sources))
 
-    prompt = f"""You are SENTINEL, synthesizing information from multiple agents to answer a user's question.
+    # - Select prompt and params by mode -
+    if interaction_mode == "agent":
+        prompt = SYNTH_PROMPT_AGENT.format(
+            user_question=user_question,
+            raw_data=raw_data[:1500],
+        )
+        system_msg = "You are ORION, the live operating system of a manufacturing laboratory. Follow the response contract exactly."
+        max_tokens = 200
+        temperature = 0.0
 
-USER'S QUESTION:
-{user_question}
+    elif interaction_mode == "voice":
+        prompt = SYNTH_PROMPT_VOICE.format(
+            user_question=user_question,
+            raw_data=_strip_markdown(raw_data)[:1200],
+        )
+        system_msg = "You are ORION speaking over voice radio. Your response will be converted to audio. Be immediately understandable in a single listen."
+        max_tokens = 150
+        temperature = 0.2
 
-DATA COLLECTED BY AGENTS:
-{raw_data[:4000]}
-{sources_text}
-
-INSTRUCTIONS:
-1. **Address EVERY part** of the user's question — if they asked about X AND Y, cover both. Do not ignore any sub-question.
-2. **Connect and reason** across data sources: if one agent provides theory and another provides real data, synthesize them into an integrated answer (e.g., "The paper says X, and station 3 currently does Y, so you could apply it by Z").
-3. **Directly answer** what the user asked — do not dump raw data
-4. Structure your response to match the user's intent:
-   - If they asked a yes/no question, lead with the answer
-   - If they asked "how", give steps
-   - If they asked "what/why", give a clear explanation
-   - If they asked for status, give a concise summary
-   - If they asked to apply/connect knowledge, provide a concrete proposal with reasoning
-5. **Answer-first with highlight**: Always lead with the direct answer using ==text== markers, then provide details in normal text.
-   - ==text== for the key answer (yellow highlight)
-   - ==+text== for positive/ok status (green), ==-text== for errors (red), ==~text== for warnings (amber), ==?text== for info (blue)
-   - Example: "==No, no están cerradas.== En la estación 4 y la 5 tenemos puertas abiertas."
-   - Example: "==+El PLC está conectado y operativo.== Última lectura hace 2 minutos, sin errores activos."
-   - Example: "==-Error de comunicación con el cobot.== Último heartbeat hace 5 minutos."
-   - The user should be able to read ONLY the highlighted text and understand the core answer
-6. Always respond in professional Markdown:
-   - **## heading** for the main topic/answer
-   - **### subheadings** for sub-sections
-   - **---** horizontal rule to separate major thematic sections (e.g., before sources, between distinct topics)
-   - **Numbered lists** (1. 2. 3.) for sequential steps or procedures
-   - **Bullet points** (- ) for unordered items — never mix bullets and numbers in the same list
-   - **Markdown tables** for structured data, comparisons, or status reports
-   - ==highlight== for direct answers, **Bold** for key terms, `inline code` for technical values, IPs, error codes
-   - ```code blocks``` for code
-   - Short paragraphs (2-3 lines max)
-   - For simple/short answers, skip heavy formatting
-7. Include sources at the end (after a --- separator) if available
-8. LANGUAGE: Respond in the same language as the user's question
-9. NEVER use emojis — no exceptions
-10. Be concise but complete — don't omit important findings
-
-User name: {user_name}
-
-Always end your response with exactly 3 follow-up suggestions in this format:
----SUGGESTIONS---
-1. [First follow-up question or action the user might want next]
-2. [Second suggestion]
-3. [Third suggestion]
----END_SUGGESTIONS---
-
-Your synthesized response:"""
+    else:
+        prompt = SYNTH_PROMPT_CHAT.format(
+            user_question=user_question,
+            raw_data=raw_data[:4000],
+            sources_text=sources_text,
+            user_name=user_name,
+        )
+        system_msg = "You are ORION, synthesizing multi-agent outputs into one coherent response. Follow the synthesis contract exactly."
+        max_tokens = 2000
+        temperature = 0.3
 
     try:
         from src.agent.utils.llm_factory import get_llm, invoke_and_track
 
-        llm = get_llm(state, temperature=0.3, max_tokens=2000)
-
+        llm = get_llm(state, temperature=temperature, max_tokens=max_tokens)
         response, tokens = invoke_and_track(llm, [
-            SystemMessage(content="You are SENTINEL, an AI assistant that synthesizes agent findings into clear, well-structured answers."),
+            SystemMessage(content=system_msg),
             HumanMessage(content=prompt),
         ], "synthesize")
 
         result = (response.content or "").strip()
+
+        # Post-processing for voice/agent
+        if interaction_mode in ("agent", "voice"):
+            result = _strip_markdown(result)
+            result = _strip_emojis(result)
+            if len(result) > 300:
+                result = result[:300].rsplit(".", 1)[0] + "."
 
         if len(result) < 10:
             return raw_data.split("]: ", 1)[-1] if "]: " in raw_data else raw_data, tokens
@@ -591,6 +917,7 @@ Your synthesized response:"""
 
     except Exception as e:
         logger.error("synthesize", f"Synthesis LLM error: {e}")
+        # Fallback: concatenate worker outputs
         parts = []
         for line in raw_data.split("\n\n"):
             if "]: " in line:
@@ -605,140 +932,13 @@ Your synthesized response:"""
         return combined, 0
 
 
-def _condense_for_agent_mode(content: str, state: Dict) -> str:
-    """Reformula respuesta para modo Agent: primera persona, 1-3 oraciones máximo."""
-    try:
-        from src.agent.utils.llm_factory import get_llm
+# ============================================
+# FORMAT HELPERS
+# ============================================
 
-        llm = get_llm(state, temperature=0, max_tokens=150)
-
-        user_message = ""
-        messages = state.get("messages", [])
-        for msg in reversed(messages):
-            if hasattr(msg, "content") and hasattr(msg, "type") and msg.type == "human":
-                user_message = msg.content
-                break
-
-        prompt = f"""Eres SENTINEL, el agente que controla un laboratorio de manufactura.
-Responde en PRIMERA PERSONA como si TÚ fueras el sistema del lab.
-Máximo 1-2 oraciones. Sin markdown, sin listas, sin emojis.
-Natural y directo, como un operador experto hablando por radio.
-Usa ==texto== para resaltar el dato clave de tu respuesta (ej: "==Puertas cerradas.== Todo en orden.").
-
-Pregunta del usuario: {user_message}
-
-Datos técnicos disponibles:
-{content[:1500]}
-
-Tu respuesta (primera persona, ultra-concisa):"""
-
-        response = llm.invoke(prompt)
-        result = response.content.strip()
-
-        if len(result) > 300:
-            result = result[:300].rsplit(".", 1)[0] + "."
-
-        return result
-
-    except Exception as e:
-        logger.error("synthesize", f"Error en condensación agent: {e}")
-        lines = [
-            l.strip()
-            for l in content.split("\n")
-            if l.strip()
-            and not l.strip().startswith("#")
-            and not l.strip().startswith("|")
-            and not l.strip().startswith("---")
-        ]
-        return "\n".join(lines[:3]) if lines else content
-
-
-def _strip_markdown(content: str) -> str:
-    """Limpia todo formato markdown/highlight de un texto."""
-    content = re.sub(r"==([+\-~?])?(.+?)==", r"\2", content)
-    content = re.sub(r"#{1,6}\s*", "", content)
-    content = re.sub(r"\*\*(.+?)\*\*", r"\1", content)
-    content = re.sub(r"\*(.+?)\*", r"\1", content)
-    content = re.sub(r"`(.+?)`", r"\1", content)
-    content = re.sub(r"^[-•]\s*", "", content, flags=re.MULTILINE)
-    content = re.sub(r"\|.+\|", "", content)
-    content = re.sub(r"---+", "", content)
-    content = re.sub(r"\n{3,}", "\n\n", content)
-    content = re.sub(r"[🏭📍📝🖥️🤖📡⚠️✅❌🔴🟢🔒🚪▶️⏹️⚡🔍🛡️]", "", content)
-    return content.strip()
-
-
-def _condense_for_voice_mode(content: str, state: Dict) -> str:
-    """
-    Reformula la respuesta para modo Voice: primera persona, ultra-concisa,
-    como un operador reportando por radio/teléfono.
-    """
-    try:
-        from src.agent.utils.llm_factory import get_llm
-
-        llm = get_llm(state, temperature=0.2, max_tokens=120)
-
-        user_message = ""
-        messages = state.get("messages", [])
-        for msg in reversed(messages):
-            if hasattr(msg, "content") and hasattr(msg, "type") and msg.type == "human":
-                user_message = msg.content
-                break
-
-        prompt = f"""You are SENTINEL, the intelligent system of a manufacturing laboratory.
-You are speaking over RADIO/PHONE with an operator. Your response will be converted to audio.
-
-STRICT RULES:
-- ALWAYS respond in ENGLISH regardless of the user's language
-- FIRST PERSON always ("I see", "I've got", "everything looks good here")
-- Maximum 1-2 short sentences. Never more than 3
-- ZERO formatting: no headers, bullets, lists, asterisks, markdown, code
-- ZERO emojis
-- Natural tone of an expert operator: direct, confident, warm
-- If everything is fine: confirm it quickly and briefly
-- If there are problems: mention the issue first ("Heads up, the cobot isn't responding"), then the rest
-- Don't repeat the user's question
-- Don't use formal phrases like "I'm pleased to inform", "certainly"
-- Talk like a person, not a document
-
-TONE EXAMPLES:
-- "All good here, the station is running without issues."
-- "Heads up, station 3's PLC isn't responding. Everything else is fine."
-- "No, no active errors. All clear."
-- "Yes, doors are closed. Ready to go."
-- "Hey, all good. What do you need?"
-
-User question: {user_message}
-
-Available data (summarize as an operator):
-{_strip_markdown(content)[:1200]}
-
-Your voice response (max 2 sentences, in English):"""
-
-        response = llm.invoke(prompt)
-        result = response.content.strip()
-
-        # Limpiar cualquier formato residual
-        result = _strip_markdown(result)
-        result = re.sub(r"[🏭📍📝🖥️🤖📡⚠️✅❌🔴🟢🔒🚪▶️⏹️⚡🔍🛡️]", "", result)
-
-        # Hard limit: si es muy largo, cortar en la última oración completa
-        if len(result) > 250:
-            result = result[:250].rsplit(".", 1)[0] + "."
-
-        return result
-
-    except Exception as e:
-        logger.error("synthesize", f"Error en condensación voice: {e}")
-        # Fallback: limpiar markdown y tomar primeras líneas
-        cleaned = _strip_markdown(content)
-        lines = [l.strip() for l in cleaned.split("\n") if l.strip()]
-        return " ".join(lines[:2]) if lines else cleaned[:200]
-
-
-def _format_as_markdown(content: str, state: Dict) -> str:
+def _format_as_markdown(content: str) -> str:
     """Ensure responses have proper markdown structure for chat/code mode."""
-    content = _clean_whitespace(content)
+    content = re.sub(r"\n{4,}", "\n\n\n", content)
 
     # Already has headings → just clean
     if re.search(r"^#{1,3}\s", content, re.MULTILINE):
@@ -748,7 +948,7 @@ def _format_as_markdown(content: str, state: Dict) -> str:
     if len(content) < 200:
         return content
 
-    # Long responses without headings → strip leading blanks
+    # Strip leading blank lines
     lines = content.split("\n")
     cleaned = []
     for line in lines:
@@ -760,43 +960,12 @@ def _format_as_markdown(content: str, state: Dict) -> str:
     return "\n".join(cleaned)
 
 
-def _clean_whitespace(text: str) -> str:
-    """Collapse 3+ consecutive blank lines to 2."""
-    return re.sub(r"\n{4,}", "\n\n\n", text)
-
-
 # ============================================
-# HELPERS (kept for backward compat)
+# PUBLIC HELPERS
 # ============================================
-
-def _create_plan_announcement(plan: List[str]) -> str:
-    if len(plan) == 1:
-        return {
-            "chat": "",
-            "research": "Voy a buscar en los documentos...",
-            "tutor": "Voy a prepararte una explicación.",
-            "troubleshooting": "",
-            "robot_operator": "",
-            "summarizer": "Comprimiendo memoria...",
-        }.get(plan[0], "")
-    else:
-        steps = [_worker_display_name(w) for w in plan if w != "chat"]
-        return f"Voy a {' → '.join(steps).lower()}." if steps else ""
-
-
-def _worker_display_name(worker: str) -> str:
-    return {
-        "chat": "Responder",
-        "research": "Investigar",
-        "tutor": "Explicar",
-        "troubleshooting": "Diagnosticar",
-        "robot_operator": "Operar Robot",
-        "summarizer": "Resumir",
-        "analysis": "Analizar datos",
-    }.get(worker, worker.capitalize())
-
 
 def get_orchestration_status(state: AgentState) -> Dict[str, Any]:
+    """Get current orchestration status for debugging/monitoring."""
     plan = state.get("orchestration_plan", [])
     step = state.get("current_step", 0)
     return {

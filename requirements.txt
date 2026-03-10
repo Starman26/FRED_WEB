@@ -4,6 +4,8 @@ pydantic
 
 # LangGraph & LangChain
 langgraph
+langgraph-checkpoint-postgres
+psycopg[binary]
 langchain
 langchain-core
 langchain-openai

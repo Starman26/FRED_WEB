@@ -18,14 +18,22 @@ from src.agent.state import AgentState
 from src.agent.contracts.worker_contract import WorkerOutputBuilder, EvidenceItem, create_error_output
 from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report, event_error
-from src.agent.tools.edge_tools import simulate_robot_position, robot_get_position, robot_move_joint, robot_move_linear, robot_gripper
+from src.agent.tools.hardware_tools.xarm_tools import (
+    xarm_get_position, xarm_move_joint, xarm_move_linear, xarm_gripper,
+    xarm_go_to_pose,
+)
 # Tools available for practice mode step directives (**Tool:** `name`)
+# Maps old edge_tools names → new hardware_tools xarm functions
 PRACTICE_TOOLS = {
-    "simulate_robot_position": simulate_robot_position,
-    "robot_get_position": robot_get_position,
-    "robot_move_joint": robot_move_joint,
-    "robot_move_linear": robot_move_linear,
-    "robot_gripper": robot_gripper,
+    "simulate_robot_position": xarm_go_to_pose,
+    "robot_get_position": xarm_get_position,
+    "xarm_get_position": xarm_get_position,
+    "robot_move_joint": xarm_move_joint,
+    "xarm_move_joint": xarm_move_joint,
+    "robot_move_linear": xarm_move_linear,
+    "xarm_move_linear": xarm_move_linear,
+    "robot_gripper": xarm_gripper,
+    "xarm_gripper": xarm_gripper,
 }
 from src.agent.prompts.tutor_prompt import (
     VISUAL_TUTOR,
@@ -168,11 +176,11 @@ def _format_robot_info(robot_state: Dict[str, Any]) -> str:
     MODE_MAP = {0: "position", 1: "servo_joint", 2: "teach", 3: "servo_cart"}
     STATE_MAP = {1: "moving", 2: "sleeping", 3: "suspended", 4: "stopping"}
     lines = []
-    for ip, r in robot_state.items():
+    for key, r in robot_state.items():
         tcp = r.get("tcp", {})
         joints = r.get("joints", [])
         temps = r.get("temperatures", [])
-        lines.append(f"Robot: {r.get('name', ip)} ({ip})")
+        lines.append(f"Robot: {r.get('id', key)} (space_id={r.get('space_id', '?')})")
         lines.append(f"  State: {STATE_MAP.get(r.get('state'), 'ready')} | Mode: {MODE_MAP.get(r.get('mode'), '?')}")
         lines.append(f"  TCP: X={tcp.get('x',0):.1f} Y={tcp.get('y',0):.1f} Z={tcp.get('z',0):.1f} mm | Roll={tcp.get('roll',0):.1f} Pitch={tcp.get('pitch',0):.1f} Yaw={tcp.get('yaw',0):.1f}")
         if joints:
@@ -181,9 +189,6 @@ def _format_robot_info(robot_state: Dict[str, Any]) -> str:
             lines.append("  Temps: " + " ".join([f"J{i+1}={t:.0f}C" for i, t in enumerate(temps)]))
         if r.get("error_code"):
             lines.append(f"  ERROR code: {r['error_code']}")
-        sz = r.get("safety_zone")
-        if sz:
-            lines.append(f"  Safety: X[{sz.get('x_min',0):.0f},{sz.get('x_max',0):.0f}] Y[{sz.get('y_min',0):.0f},{sz.get('y_max',0):.0f}] Z[{sz.get('z_min',0):.0f},{sz.get('z_max',0):.0f}]")
     return "\n".join(lines)
 
 
@@ -952,9 +957,17 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
         error_output = create_error_output("tutor", "NO_MESSAGE", "No hay mensaje del usuario")
         return {"worker_outputs": [error_output.model_dump()], "tutor_result": error_output.model_dump_json(), "events": events}
     
+    from src.agent.utils.stream_utils import get_worker_stream
+    stream = get_worker_stream(state, "tutor")
+
     evidence_text, evidence_items = get_evidence_from_context(state)
     context_text = get_prior_summaries(state)
     has_evidence = len(evidence_items) > 0
+
+    if has_evidence:
+        stream.status(f"Preparando explicacion basada en {len(evidence_items)} fuentes...")
+    else:
+        stream.status("Preparando explicacion...")
     
     try:
         llm = get_llm(state, temperature=0.7)
@@ -986,6 +999,7 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
     messages.extend(history)
     messages.append(HumanMessage(content=user_message))
     
+    stream.status("Generando explicacion adaptada a tu nivel...")
     tokens_used = 0
     try:
         response, tokens_used = invoke_and_track(llm, messages, "tutor")

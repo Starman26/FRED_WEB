@@ -1,42 +1,47 @@
 """
-state.py - Definición del estado compartido del agente con soporte para orchestration multi-step
+state.py 
+Definición del estado compartido del agente 
+con soporte para orchestration multi-step
 
-CAMBIOS PRINCIPALES vs versión anterior:
-1. Añadido soporte para orchestration_plan (lista de workers a ejecutar)
-2. Añadido worker_outputs acumulativo (historial de outputs)
-3. Añadido pending_context (contexto para el siguiente worker)
-4. Añadido soporte para human-in-the-loop
-5. Campos consistentes (troubleshooting_result, no troubleshooter_result)
 """
 from typing import TypedDict, Annotated, Sequence, Any, List, Dict, Optional
 from langchain_core.messages import BaseMessage
 import operator
 
 
-def merge_worker_outputs(left: List[Dict], right: List[Dict]) -> List[Dict]:
+# Usar esto en vez de [] cuando se quiera limpiar los outputs.
+RESET_WORKER_OUTPUTS = "__RESET_WORKER_OUTPUTS__"
+
+
+def merge_worker_outputs(left: List[Dict], right: Any) -> List[Dict]:
     """
     Reducer personalizado para worker_outputs.
-    
+
     REGLAS:
-    - Si right es EXACTAMENTE [] (lista vacía), RESETEAR (devolver [])
-    - Si right es None, mantener left
-    - Si right tiene elementos, concatenar sin duplicados
+    - Si right es RESET_WORKER_OUTPUTS sentinel → RESETEAR (devolver [])
+    - Si right es None o [] → mantener left (sin cambios)
+    - Si right tiene elementos → concatenar sin duplicados por task_id
     """
-    # RESET: Si se pasa lista vacía explícitamente, limpiar todo
-    if right is not None and len(right) == 0:
+    # RESET explícito con sentinel
+    if right == RESET_WORKER_OUTPUTS:
         return []
-    
-    # Mantener left si right es None
+
+    # Sin cambios: None o lista vacía
     if right is None:
         return left or []
-    
+    if isinstance(right, list) and len(right) == 0:
+        return left or []
+
     if not left:
-        return right or []
-    
-    # Usar task_id para evitar duplicados
+        return right if isinstance(right, list) else []
+
+    if not isinstance(right, list):
+        return left
+
+    # Merge sin duplicados por task_id
     existing_ids = {o.get("task_id") for o in left if o.get("task_id")}
     merged = list(left)
-    
+
     for output in right:
         task_id = output.get("task_id")
         if task_id and task_id not in existing_ids:
@@ -44,7 +49,7 @@ def merge_worker_outputs(left: List[Dict], right: List[Dict]) -> List[Dict]:
             existing_ids.add(task_id)
         elif not task_id:
             merged.append(output)
-    
+
     return merged
 
 
@@ -200,6 +205,26 @@ class AgentState(TypedDict):
     robot_ids: List[str]  # IDs de robots seleccionados en la UI (e.g., ["xarm-201", "xarm-202"])
     robot_state: Annotated[Dict[str, Any], merge_dicts]  # Telemetría de robots desde lab.robot_state
 
+    # === BITL (Bridge-in-the-Loop) fields ===
+    bridge_report: Optional[dict]              # Último reporte recibido del bridge
+    practice_session_active: bool              # Si hay practice session BITL activa
+    current_practice_step: int                 # Índice del paso actual (0-based)
+    total_practice_steps: int                  # Total de pasos en la rutina
+    practice_results: list                     # Resultados por paso: [{"step": 0, "passed": True, "score": 0.95, ...}]
+    practice_expected_steps: list              # Pasos esperados de la rutina (parseados del automation content)
+    target_robot_id: Optional[str]             # Robot principal de la practice session
+
+    # ==========================================
+    # 6d. TOOL EXECUTION & DEVICES
+    # ==========================================
+    tool_execution_log: Annotated[List[Dict[str, Any]], operator.add]  # Historial de tool calls con resultados y tiempos
+    active_devices: Dict[str, Any]  # Snapshot de dispositivos conectados / bridge metadata (se sobrescribe)
+
+    # ==========================================
+    # 6c. STREAMING CALLBACK (not serializable, injected per-request)
+    # ==========================================
+    _stream_session_id: Optional[str]  # Session ID para lookup de callback en api_server registry
+
     # ==========================================
     # 7. RESULTADOS DE WORKERS (Legacy/Compatibilidad)
     # ==========================================
@@ -270,6 +295,22 @@ STATE_DEFAULTS: Dict[str, Any] = {
     "user_profile_md": "",
     "robot_ids": [],
     "robot_state": {},
+
+    # BITL (Bridge-in-the-Loop)
+    "bridge_report": None,
+    "practice_session_active": False,
+    "current_practice_step": 0,
+    "total_practice_steps": 0,
+    "practice_results": [],
+    "practice_expected_steps": [],
+    "target_robot_id": None,
+
+    # Tool execution & devices
+    "tool_execution_log": [],
+    "active_devices": {},
+
+    # Streaming callback
+    "_stream_session_id": None,
 
     # Resultados legacy
     "research_result": None,

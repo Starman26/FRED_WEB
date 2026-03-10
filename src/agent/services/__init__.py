@@ -126,13 +126,22 @@ def _create_embeddings():
 
 
 def _create_xarm():
-    from src.agent.tools.robot_tools.xarm_client import XArmClient
-    ip = os.getenv("XARM_IP", "192.168.1.203")
+    """xArm service — now uses hardware_tools.edge_router instead of direct SDK.
+
+    Returns a dict with connection info; actual commands go through
+    edge_router.send_command(device_type="xarm", ...).
+    """
     if os.getenv("XARM_ENABLED", "false").lower() != "true":
         raise ValueError("XARM_ENABLED no está activo")
-    client = XArmClient(ip)
-    print(f"[services] xArm client creado para {ip}")
-    return client
+    ip = os.getenv("XARM_IP", "192.168.1.203")
+    from src.agent.tools.hardware_tools import is_mock_mode
+    info = {
+        "ip": ip,
+        "mock_mode": is_mock_mode(),
+        "is_connected": True,  # edge_router handles connection
+    }
+    print(f"[services] xArm via edge_router: {ip} (mock={info['mock_mode']})")
+    return info
 
 
 def _create_elevenlabs():

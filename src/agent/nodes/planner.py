@@ -17,9 +17,9 @@ from datetime import datetime
 
 from langchain_core.messages import HumanMessage, AIMessage
 
-from src.agent.state import AgentState
+from src.agent.state import AgentState, RESET_WORKER_OUTPUTS
 from src.agent.utils.logger import logger
-from src.agent.utils.run_events import event_plan, event_report, event_error
+from src.agent.utils.run_events import event_plan, event_report, event_error, event_narration
 
 
 # ============================================
@@ -30,7 +30,7 @@ FAST_CONFIDENCE_THRESHOLD = 0.85
 
 VALID_WORKERS = {
     "chat", "research", "tutor", "troubleshooting",
-    "summarizer", "robot_operator", "analysis",
+    "summarizer", "robot_operator", "analysis", "practice",
 }
 
 
@@ -45,7 +45,7 @@ AVAILABLE WORKERS:
 2. **research**: Search internal documents/papers using RAG (PLCs, Cobots, AI/ML, industrial automation)
 3. **troubleshooting**: Diagnose lab problems, check equipment status, execute lab commands (6 stations with PLC + Cobot + sensors)
 4. **tutor**: Explain technical concepts pedagogically, synthesize information for learning
-5. **robot_operator**: Control xArm robot (move, home, gripper, emergency stop)
+5. **robot_operator**: Control robots — xArm (move joints, gripper, home) and ABB IRB (move linear/joint, home, set speed). Also PLC I/O writes.
 6. **summarizer**: Compress conversation memory (automatic only, NEVER include in a plan)
 
 THINK step by step:
@@ -62,6 +62,8 @@ RULES:
 - Search documents AND apply/relate AND explain pedagogically → ["research", "troubleshooting", "tutor"]
 - Lab diagnosis, equipment status, execute lab actions → ["troubleshooting"]
 - Robot xArm control (move, home, gripper) → ["robot_operator"]
+- ABB robot control (move, home, speed) → ["robot_operator"]
+- PLC I/O writes → ["robot_operator"]
 - Explain a general concept (no lab-specific documents needed) → ["tutor"]
 - NEVER include "summarizer" in a plan
 - Maximum 3 workers
@@ -143,6 +145,15 @@ _ROBOT_PATTERNS: list = [
     (re.compile(r"(?:estado|status)\s*(?:del?\s+)?(?:robot|xarm|brazo)"), "robot_status"),
     (re.compile(r"(?:velocidad|speed)\s*(?:del?\s+)?(?:robot|xarm|brazo)"), "robot_get_speed"),
     (re.compile(r"(?:cambia|cambiar|set|pon|poner)\s*(?:la\s+)?(?:velocidad|speed).*?(\d+)"), "robot_set_speed"),
+    # ABB patterns
+    (re.compile(r"(?:mueve?|mover)\s+(?:el\s+)?(?:abb|irb).*?([xyz]).*?([-+]?\d+)"), "robot_move"),
+    (re.compile(r"(?:mueve?|mover)\s+(?:el\s+)?(?:abb|irb).*?(arriba|abajo|izquierda|derecha|adelante|atr[aá]s).*?(\d+)"), "robot_move_direction"),
+    (re.compile(r"(?:abb|irb).*?(?:a\s+)?(?:home|posici[oó]n\s+inicial|inicio)"), "robot_home"),
+    (re.compile(r"(?:home|posici[oó]n\s+inicial).*?(?:abb|irb)"), "robot_home"),
+    (re.compile(r"(?:posici[oó]n|donde\s+est[aá]|coordenadas?).*?(?:abb|irb)"), "robot_get_position"),
+    (re.compile(r"(?:abb|irb).*?(?:posici[oó]n|donde|coordenadas?)"), "robot_get_position"),
+    (re.compile(r"(?:velocidad|speed)\s*(?:del?\s+)?(?:abb|irb)"), "robot_get_speed"),
+    (re.compile(r"(?:cambia|set|pon)\s*(?:la\s+)?(?:velocidad|speed)\s*(?:del?\s+)?(?:abb|irb).*?(\d+)"), "robot_set_speed"),
 ]
 
 _RE_EMERGENCY = re.compile(
@@ -154,10 +165,12 @@ _RE_EMERGENCY = re.compile(
 
 # PLC / Health
 _RE_PLC_PING = re.compile(
-    r"ping\s*pong|ping\s+(?:la\s+|el\s+)?plc|"
+    r"ping\s*pong|"
+    r"ping\s+(?:la\s+|el\s+)?(?:plc|ip|direcci[oó]n)|"
+    r"(?:haz|hacer|hazle)\s+(?:un\s+)?ping|"
+    r"ping\s+\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
     r"health\s*check|chequeo\s+(?:de\s+)?salud|"
-    r"salud\s+(?:del?\s+)?(?:plc|estaci[oó]n|lab)|"
-    r"hacer\s+(?:un\s+)?ping|hazle\s+(?:un\s+)?ping"
+    r"salud\s+(?:del?\s+)?(?:plc|estaci[oó]n|lab)"
 )
 
 # Lab commands
@@ -437,7 +450,7 @@ def _fast_intent_analysis(message: str) -> Dict[str, Any]:
 _LAB_KEYWORDS = [
     "laboratorio", "estacion", "estación", "plc", "cobot", "puerta",
     "door", "sensor", "equipo", "alarma", "alarm", "falla",
-    "station", "conveyor", "banda",
+    "station", "conveyor", "banda", "abb", "irb",
 ]
 
 _LAB_ACTIONS = [
@@ -455,7 +468,8 @@ _RESEARCH_NEEDED_KEYWORDS = [
 
 _ROBOT_ACTION_KEYWORDS = {
     "robot", "move", "mover", "mueve", "gripper", "pinza",
-    "home", "xarm", "emergency", "emergencia", "paro",
+    "home", "xarm", "abb", "irb",
+    "emergency", "emergencia", "paro",
     "position", "posicion", "posición", "step", "paso",
 }
 
@@ -474,7 +488,7 @@ def _is_robot_action(fast_result: Dict[str, Any], message: str) -> bool:
         return True
     if intent == "command":
         msg_lower = message.lower()
-        has_robot_mention = "robot" in msg_lower or "xarm" in msg_lower or "brazo" in msg_lower
+        has_robot_mention = any(kw in msg_lower for kw in ["robot", "xarm", "brazo", "abb", "irb"])
         has_robot_verb = any(kw in msg_lower for kw in ["mueve", "mover", "move", "home", "gripper", "paro", "posicion", "conecta"])
         if has_robot_mention and has_robot_verb:
             return True
@@ -650,7 +664,7 @@ def _build_fallback_plan(text: str) -> Dict[str, Any]:
     if any(kw in text_lower for kw in chat_kw):
         plan = ["chat"]
         reasoning = "Fallback: greeting detected"
-    elif any(kw in text_lower for kw in ["xarm", "robot xarm", "mover robot", "gripper", "home robot"]):
+    elif any(kw in text_lower for kw in ["xarm", "robot xarm", "mover robot", "gripper", "home robot", "abb", "irb", "mueve el abb"]):
         plan = ["robot_operator"]
         reasoning = "Fallback: robot keyword detected"
     else:
@@ -851,7 +865,7 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
             },
             "orchestration_plan": ["chat"],
             "current_step": 0,
-            "worker_outputs": [],
+            "worker_outputs": RESET_WORKER_OUTPUTS,
             "pending_context": {},
             "clarification_questions": [],
             "needs_human_input": False,
@@ -871,15 +885,16 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
     # ══════════════════════════════════════════
     # PRACTICE MODE: bypass everything, direct to tutor
     # ══════════════════════════════════════════
+    
     if interaction_mode == "practice":
         return {
             "orchestration_plan": ["tutor"],
             "current_step": 0,
             "intent_analysis": {"primary_intent": "practice", "confidence": 1.0, "requires_workers": ["tutor"]},
-            "plan_reasoning": "Practice mode -- direct to tutor",
+            "plan_reasoning": "Practice mode -- direct to tutor (conversational practice)",
             "planner_method": "fast_path_practice",
             "pending_context": {},
-            "worker_outputs": [],
+            "worker_outputs": RESET_WORKER_OUTPUTS,
             "clarification_questions": [],
             "needs_human_input": False,
             "next": "tutor",
@@ -920,6 +935,8 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
                      f"FAST ({elapsed_ms:.0f}ms): {fast_result['intent']}|{fast_result['action']} → {plan}")
 
         announcement = _create_rich_announcement(plan, fast_result, reasoning, user_message)
+        if announcement:
+            events.append(event_narration("planner", announcement, phase="announcement"))
 
         return {
             "intent_analysis": fast_result,
@@ -932,7 +949,7 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
                 "urgency": fast_result.get("urgency", "low"),
                 "sentiment": fast_result.get("sentiment", "neutral"),
             },
-            "worker_outputs": [],
+            "worker_outputs": RESET_WORKER_OUTPUTS,
             "clarification_questions": [],
             "needs_human_input": False,
             "next": plan[0],
@@ -972,12 +989,17 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
         display_names = [_WORKER_DISPLAY.get(w, w) for w in plan if w != "chat"]
         announcement = f"{reasoning}. Voy a {', luego '.join(display_names)}." if display_names else reasoning
 
+    if reasoning:
+        events.append(event_narration("planner", reasoning, phase="reasoning"))
+    if announcement:
+        events.append(event_narration("planner", announcement, phase="announcement"))
+
     return {
         "intent_analysis": intent_analysis,
         "orchestration_plan": plan,
         "current_step": 0,
         "pending_context": llm_result["pending_context"],
-        "worker_outputs": [],
+        "worker_outputs": RESET_WORKER_OUTPUTS,
         "clarification_questions": [],
         "needs_human_input": False,
         "next": plan[0],

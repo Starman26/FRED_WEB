@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SENTINEL is a multi-agent orchestration system for laboratory automation, technical documentation research, and robot control. Built with LangGraph, it coordinates specialized worker agents to handle complex industrial automation tasks.
 
+- **Language**: Python 3.11+ (codebase comments/docs are in Spanish)
+- **Package manager**: Poetry (see `pyproject.toml`)
+- **Key deps**: LangGraph, LangChain, FastAPI, Streamlit, Supabase
+
 ## Development Commands
 
 ### Running the Application
@@ -20,7 +24,7 @@ streamlit run app/app_streamlit.py
 # Local development
 uvicorn api_server:app --host 0.0.0.0 --port 8000 --reload
 
-# Production (Cloud Run)
+# Production (Azure Container Apps)
 docker build -t fredie-agent .
 docker run -p 8080:8080 --env-file .env fredie-agent
 ```
@@ -30,9 +34,14 @@ docker run -p 8080:8080 --env-file .env fredie-agent
 # Run all tests
 pytest
 
+# Run a single test file
+pytest tests/test_file.py
+
 # Run with async support
 pytest-asyncio
 ```
+
+> **Note:** No test suite exists yet. The commands above are for when tests are added.
 
 ### Code Quality
 ```bash
@@ -79,9 +88,9 @@ Located in [src/agent/workers/](src/agent/workers/), each worker is a specialize
 | `chat` | Casual conversation, greetings | None (direct LLM) |
 | `research` | RAG search in technical documents | `rag_tools.py` |
 | `tutor` | Educational explanations | Synthesis of research results |
-| `troubleshooting` | Lab diagnostics, equipment status | `lab_tools/*` |
-| `robot_operator` | xArm robot control | `robot_tools/xarm_tools.py` |
-| `analysis` | SQL data analysis on Supabase | `analyst_tools.py` |
+| `troubleshooting` | Lab diagnostics, equipment status | `hardware_tools/*`, `db_tools/rag_tools.py` |
+| `robot_operator` | xArm robot control | `hardware_tools/xarm_tools.py` |
+| `analysis` | SQL data analysis on Supabase | `db_tools/analyst_tools.py` |
 | `summarizer` | Memory compression | N/A |
 
 **Adding a New Worker:**
@@ -115,19 +124,20 @@ State is defined in [src/agent/state.py](src/agent/state.py) using `TypedDict` w
 
 Tools are organized by domain in [src/agent/tools/](src/agent/tools/):
 
-**Lab Tools** ([src/agent/tools/lab_tools/](src/agent/tools/lab_tools/)):
-- `station_tools.py`: Station status queries
-- `equipment_tools.py`: Equipment diagnostics (PLC, cobot, sensors)
-- `error_tools.py`: Error log analysis
-- `repair_tools.py`: Repair history
-- `formatters.py`: Markdown output formatting
+**Hardware Tools** ([src/agent/tools/hardware_tools/](src/agent/tools/hardware_tools/)):
+- `edge_router.py`: Unified transport layer (WebSocket + mock dispatch)
+- `xarm_tools.py`: xArm 6 Lite control (xarm_get_position, xarm_move_joint, xarm_move_linear, xarm_go_home, xarm_gripper, xarm_emergency_stop)
+- `abb_tools.py`: ABB IRB robot control
+- `plc_tools.py`: Siemens S7 PLC read/write
+- `network_tools.py`: Network diagnostics and shell commands
 
-**Robot Tools** ([src/agent/tools/robot_tools/](src/agent/tools/robot_tools/)):
-- `xarm_tools.py`: xArm control (move, home, gripper, emergency stop)
+**DB Tools** ([src/agent/tools/db_tools/](src/agent/tools/db_tools/)):
+- `rag_tools.py`: RAG search (general + equipment-scoped manuals + web search via Tavily)
+- `analyst_tools.py`: SQL query tools for data analysis
 
-**RAG Tools** ([src/agent/tools/rag_tools.py](src/agent/tools/rag_tools.py)):
-- Semantic search in Supabase vector store
-- PDF document ingestion
+**Infrastructure:**
+- `tool_registry.py`: Metadata and centralized tool registration
+- `tool_executor.py`: Execution with timeout, retry, verification
 
 ### Services Layer
 
@@ -268,10 +278,17 @@ src/agent/
 │   ├── analysis_node.py
 │   └── summarizer_node.py
 ├── tools/                # Domain-specific tools
-│   ├── lab_tools/
-│   ├── robot_tools/
-│   ├── analyst_tools.py
-│   └── rag_tools.py
+│   ├── hardware_tools/       # Device tools via edge_router
+│   │   ├── edge_router.py        # WebSocket + mock transport
+│   │   ├── xarm_tools.py         # xArm 6 Lite
+│   │   ├── abb_tools.py          # ABB IRB
+│   │   ├── plc_tools.py          # Siemens S7
+│   │   └── network_tools.py      # Network diagnostics
+│   ├── db_tools/             # Knowledge & data tools
+│   │   ├── rag_tools.py          # RAG search + equipment manuals
+│   │   └── analyst_tools.py      # SQL analysis
+│   ├── tool_registry.py
+│   └── tool_executor.py
 ├── contracts/            # Type definitions
 │   └── worker_contract.py
 └── utils/                # Helpers
@@ -289,16 +306,16 @@ api_server.py             # FastAPI SSE endpoint
 
 ## Common Tasks
 
-### Add a New Lab Equipment Type
+### Add a New Device Type
 
-1. Add tool functions in `src/agent/tools/lab_tools/equipment_tools.py`
-2. Register tools in `src/agent/tools/lab_tools/__init__.py`
-3. Update troubleshooter worker to use new tools
-4. Add database schema if needed (Supabase migrations)
+1. Create `src/agent/tools/hardware_tools/your_device_tools.py` following the pattern in `xarm_tools.py`
+2. Register mock handlers in the module (auto-registered on import)
+3. Add tool lists to `hardware_tools/__init__.py`
+4. Update the relevant worker to bind the new tools
 
 ### Add Support for New Robot
 
-1. Create `src/agent/tools/robot_tools/your_robot_tools.py`
+1. Create `src/agent/tools/hardware_tools/your_robot_tools.py` (uses `edge_router.send_command`)
 2. Create or modify worker in `src/agent/workers/`
 3. Update intent analyzer to recognize robot keywords
 4. Add to `VALID_WORKERS` and routing logic
@@ -331,9 +348,14 @@ Key tables:
 - `equipment_status`: Real-time lab equipment state
 - `error_logs`: Equipment error history
 
-## Testing Strategy
+## SSE Event Protocol
 
-- Unit tests for individual tools/workers
-- Integration tests for full graph execution
-- Use `MemorySaver` checkpointer for test isolation
-- Mock Supabase client in tests to avoid DB dependencies
+The FastAPI server (`api_server.py`) streams events via SSE to clients:
+- `thinking` — Agent is processing (node started)
+- `node_update` — Node completed with events
+- `suggestions` — Follow-up suggestions
+- `questions` — HITL clarification questions (interrupt)
+- `response` — Final assistant message
+- `audio_chunk` / `audio_done` — TTS streaming (voice mode)
+- `tokens` — Token usage info
+- `error` / `done` — Error or stream complete

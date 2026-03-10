@@ -1,25 +1,23 @@
 """
+---------------------------------------------------------------------------
 api_server.py
-=============
-FastAPI server with SSE streaming for the FrEDie agent.
-Replaces Streamlit for production deployment on Azure Container Apps.
-
-Run locally:
-    uvicorn api_server:app --host 0.0.0.0 --port 8000 --reload
-
-Deploy to Azure Container Apps via Dockerfile.
+---------------------------------------------------------------------------
 
 SSE Event Types sent to client:
-    event: thinking     → Agent is processing (node started)
-    event: node_update  → Node completed with events
-    event: suggestions  → Follow-up suggestions
-    event: questions     → HITL clarification questions (interrupt)
-    event: response     → Final assistant message
-    event: audio_chunk  → Base64-encoded MP3 audio chunk (voice mode only)
-    event: audio_done   → TTS streaming complete (voice mode only)
-    event: tokens       → Token usage info
-    event: error        → Error occurred
-    event: done         → Stream complete
+    event: thinking        --> Agent is processing (node started)
+    event: node_update     --> Node completed with events
+    event: suggestions     --> Follow-up suggestions
+    event: questions       --> HITL clarification questions (interrupt)
+    event: response        --> Final assistant message
+    event: tool_lifecycle  --> Tool execution lifecycle (planned/executing/verifying/completed/failed)
+    event: audio_chunk     --> Base64-encoded MP3 audio chunk (voice mode only)
+    event: audio_done      --> TTS streaming complete (voice mode only)
+    event: tokens          --> Token usage info
+    event: error           --> Error occurred
+    event: done            --> Stream complete
+---------------------------------------------------------------------------
+---------------------------------------------------------------------------
+
 """
 
 import os
@@ -27,6 +25,8 @@ import json
 import base64
 import asyncio
 import logging
+import threading
+from collections import deque
 from datetime import datetime
 from typing import AsyncGenerator, Dict, Any, List, Optional, Union
 
@@ -44,7 +44,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("api_server")
 
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,https://your-app.vercel.app").split(",")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:4173,http://localhost:3000,https://orion.ai").split(",")
 API_KEY = os.getenv("API_KEY", "")  # Optional: set for auth
 
 # ============================================
@@ -65,13 +65,14 @@ class ChatRequest(BaseModel):
     automation_md_content: Optional[str] = None
     automation_step: Optional[int] = None
     robot_ids: Optional[List[str]] = None
+    equipment_id: Optional[str] = None  
     voice_enabled: bool = False
     voice_id: Optional[str] = None
 
 
 class ConfirmRequest(BaseModel):
     session_id: str
-    answers: Union[dict, list]  # dict (v2) or list (legacy)
+    answers: Union[dict, list]  
     completed: bool = True
     cancelled: bool = False
     interaction_mode: Optional[str] = "chat"
@@ -81,8 +82,8 @@ class ConfirmRequest(BaseModel):
 # APP
 # ============================================
 app = FastAPI(
-    title="FrEDie Agent API",
-    description="SSE streaming API for the FrEDie multi-agent system",
+    title="ORION Agent API",
+    description="SSE streaming API for the orion multi-agent system",
     version="1.0.0",
 )
 
@@ -94,11 +95,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Robot bridge registry ──
+# Robot bridge registry 
 BRIDGE_TOKEN = os.getenv("BRIDGE_TOKEN", "dev-bridge-token")
 ROBOT_CONNECTIONS: Dict[str, WebSocket] = {}   # robot_id → WebSocket
+ROBOT_METADATA: Dict[str, dict] = {}           # robot_id → {type, model, capabilities, last_heartbeat, ...}
 PENDING_COMMANDS: Dict[str, dict] = {}          # cmd_id  → {"event": Event, "result": dict|None}
+BRIDGE_ANOMALY_QUEUE: deque = deque(maxlen=100)  # Anomalies from bridge status_update
 _main_loop: asyncio.AbstractEventLoop = None
+
+#  Stream callback registry (out-of-state, avoids msgpack serialization) 
+_STREAM_CALLBACKS: Dict[str, Any] = {}
+_STREAM_CALLBACKS_LOCK = threading.Lock()
+
+
+def register_stream_callback(session_id: str, callback):
+    """Registra un callback de streaming para una sesión."""
+    with _STREAM_CALLBACKS_LOCK:
+        _STREAM_CALLBACKS[session_id] = callback
+
+
+def unregister_stream_callback(session_id: str):
+    """Elimina el callback de streaming de una sesión."""
+    with _STREAM_CALLBACKS_LOCK:
+        _STREAM_CALLBACKS.pop(session_id, None)
+
+
+def get_stream_callback(session_id: str):
+    """Obtiene el callback de streaming de una sesión (thread-safe)."""
+    with _STREAM_CALLBACKS_LOCK:
+        return _STREAM_CALLBACKS.get(session_id)
 
 
 @app.on_event("startup")
@@ -109,23 +134,49 @@ async def _capture_loop():
 
 
 def get_main_loop() -> asyncio.AbstractEventLoop:
-    """Return the main event loop (used by edge_tools sync wrappers)."""
+    """Return the main event loop (used by edge_router sync wrappers)."""
     return _main_loop
 
 
 async def send_robot_command(robot_id: str, command: str, params: dict = None, timeout: float = 10.0) -> dict:
     """Send a command to a connected robot via WebSocket bridge and wait for response."""
     ws = ROBOT_CONNECTIONS.get(robot_id)
+
+    # Priority 2: match by device_type (explicit — edge_router always sets this)
+    if not ws and isinstance(params, dict):
+        target_type = params.get("_device_type", "")
+        if target_type:
+            for rid, meta in ROBOT_METADATA.items():
+                if meta.get("type") == target_type and rid in ROBOT_CONNECTIONS:
+                    logger.info(f"Routing '{command}' to '{rid}' (matched type='{target_type}')")
+                    robot_id = rid
+                    ws = ROBOT_CONNECTIONS[rid]
+                    break
+
+    # Priority 3: match by IP (fallback if type didn't match)
+    if not ws:
+        search_ip = robot_id if "." in robot_id else ""
+        if not search_ip and isinstance(params, dict):
+            search_ip = params.get("plc_ip", "") or params.get("ip", "")
+        if search_ip:
+            for rid, meta in ROBOT_METADATA.items():
+                if search_ip in meta.get("ips", []) and rid in ROBOT_CONNECTIONS:
+                    logger.info(f"Routing '{command}' to '{rid}' (matched IP {search_ip})")
+                    robot_id = rid
+                    ws = ROBOT_CONNECTIONS[rid]
+                    break
+
+    # Last resort fallback
     if not ws and ROBOT_CONNECTIONS:
-        # Fallback: use first available robot (tools default to "xarm-01" but bridges register with their real ID)
         actual_id = next(iter(ROBOT_CONNECTIONS))
         logger.info(f"Robot '{robot_id}' not found, using '{actual_id}'")
         robot_id = actual_id
         ws = ROBOT_CONNECTIONS[actual_id]
+
     if not ws:
         return {
             "status": "error",
-            "error": f"No robots connected",
+            "error": "No devices connected. Check that the lab bridge is running.",
             "connected_robots": [],
         }
 
@@ -143,93 +194,66 @@ async def send_robot_command(robot_id: str, command: str, params: dict = None, t
         result = PENDING_COMMANDS[cmd_id]["result"]
         return result if result else {"status": "error", "error": "No response received"}
     except asyncio.TimeoutError:
-        return {"status": "error", "error": f"Robot command '{command}' timed out after {timeout}s"}
+        return {"status": "error", "error": f"Command '{command}' timed out after {timeout}s"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
     finally:
         PENDING_COMMANDS.pop(cmd_id, None)
 
 
+async def notify_bridge(robot_id: str, message: dict) -> bool:
+    """Send a one-way notification to a connected robot bridge. Returns True on success."""
+    ws = ROBOT_CONNECTIONS.get(robot_id)
+    if not ws:
+        logger.warning(f"notify_bridge: robot '{robot_id}' not connected")
+        return False
+    try:
+        await ws.send_json(message)
+        return True
+    except Exception as e:
+        logger.error(f"notify_bridge: failed to send to '{robot_id}': {e}")
+        return False
+
+
 # ── Graph (singleton) ──
 _graph = None
+
+def _get_checkpointer():
+    """Get persistent checkpointer, fall back to in-memory."""
+    db_url = os.getenv("DATABASE_URL") or os.getenv("SUPABASE_DB_URL")
+    if db_url:
+        try:
+            from langgraph.checkpoint.postgres import PostgresSaver
+            saver = PostgresSaver.from_conn_string(db_url)
+            saver.setup()  # Creates checkpoint tables if they don't exist
+            logger.info("Using PostgresSaver checkpointer")
+            return saver
+        except Exception as e:
+            logger.warning(f"PostgresSaver failed, using MemorySaver: {e}")
+    from langgraph.checkpoint.memory import MemorySaver
+    return MemorySaver()
+
 
 def get_graph():
     global _graph
     if _graph is None:
-        from langgraph.checkpoint.memory import MemorySaver
-        from langgraph.graph import StateGraph, END
-        from src.agent.state import AgentState
-        from src.agent.bootstrap import bootstrap_node
-        from src.agent.nodes.planner import planner_node
-        from src.agent.orchestrator import adaptive_router_node, synthesize_node
-        from src.agent.nodes.human_input import human_input_node
-        from src.agent.workers.chat_node import chat_node
-        from src.agent.workers.research_node import research_node
-        from src.agent.workers.tutor_node import tutor_node
-        from src.agent.workers.troubleshooter_node import troubleshooter_node
-        from src.agent.workers.summarizer_node import summarizer_node
-        from src.agent.workers.robot_operator_node import robot_operator_node
-        from src.agent.workers.analysis_node import analysis_node
-        from src.agent.graph import VALID_WORKERS, route_from_planner, route_from_orchestrator
-
-        checkpointer = MemorySaver()
-
-        workflow = StateGraph(AgentState)
-        workflow.add_node("bootstrap", bootstrap_node)
-        workflow.add_node("planner", planner_node)
-        workflow.add_node("route", adaptive_router_node)
-        workflow.add_node("synthesize", synthesize_node)
-        workflow.add_node("human_input", human_input_node)
-        workflow.add_node("chat", chat_node)
-        workflow.add_node("research", research_node)
-        workflow.add_node("tutor", tutor_node)
-        workflow.add_node("troubleshooting", troubleshooter_node)
-        workflow.add_node("summarizer", summarizer_node)
-        workflow.add_node("robot_operator", robot_operator_node)
-        workflow.add_node("analysis", analysis_node)
-
-        workflow.set_entry_point("bootstrap")
-        workflow.add_edge("bootstrap", "planner")
-
-        def route_after_human_input(state):
-            if state.get("orchestration_plan"):
-                return "route"
-            return "planner"
-
-        planner_edges = {w: w for w in VALID_WORKERS}
-        planner_edges["END"] = END
-        workflow.add_conditional_edges("planner", route_from_planner, planner_edges)
-
-        for worker in VALID_WORKERS:
-            workflow.add_edge(worker, "route")
-
-        route_edges = {w: w for w in VALID_WORKERS}
-        route_edges.update({"synthesize": "synthesize", "human_input": "human_input", "END": END})
-        workflow.add_conditional_edges("route", route_from_orchestrator, route_edges)
-
-        workflow.add_edge("synthesize", END)
-        workflow.add_conditional_edges("human_input", route_after_human_input, {
-            "route": "route", "planner": "planner"
-        })
-
-        _graph = workflow.compile(checkpointer=checkpointer)
-        logger.info("Graph built with MemorySaver checkpointer")
+        from src.agent.graph import create_graph_with_checkpointer
+        checkpointer = _get_checkpointer()
+        _graph = create_graph_with_checkpointer(checkpointer=checkpointer)
+        logger.info(f"Graph compiled from graph.py with {type(checkpointer).__name__} checkpointer")
     return _graph
 
 
-# ── Auth (optional) ──
+# Auth For Production (Not implemented Yet)
 async def verify_auth(authorization: Optional[str] = Header(None)):
     if API_KEY and API_KEY != "":
         if not authorization or authorization.replace("Bearer ", "") != API_KEY:
             raise HTTPException(401, "Unauthorized")
 
 
-# ── Worker nodes to watch for events ──
-_ALL_NODES = [
-    "bootstrap", "planner", "route",
-    "chat", "research", "tutor", "troubleshooting", "summarizer",
-    "robot_operator", "analysis", "synthesize", "human_input", "verify_info",
-]
+# Worker Events to watch for — imported from the single source of truth
+from src.agent.graph import ALL_NODES as _ALL_NODES_SET
+_ALL_NODES = sorted(_ALL_NODES_SET)
 
 
 # ============================================
@@ -291,21 +315,48 @@ def _strip_suggestion_block(text: str) -> str:
     return text.split("---SUGGESTIONS---", 1)[0].strip()
 
 
+def _extract_ai_from_node(node_data: dict) -> Optional[str]:
+    """Helper: extract AIMessage content from a node's state update."""
+    if not isinstance(node_data, dict):
+        return None
+    for msg in node_data.get("messages", []):
+        if isinstance(msg, AIMessage):
+            content = (msg.content or "").strip()
+            if content:
+                return content
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            content = (msg.get("content") or "").strip()
+            if content:
+                return content
+    return None
+
+
 def extract_response(event: dict) -> Optional[str]:
-    """Extract final AI message - only from synthesize node to avoid duplicates."""
-    # Only check synthesize - this is the final combined response
-    if "synthesize" in event and isinstance(event["synthesize"], dict):
-        messages = event["synthesize"].get("messages", [])
-        print(f"[EXTRACT] synthesize found, messages count={len(messages)}, types={[type(m).__name__ for m in messages]}", flush=True)
-        for msg in messages:
-            if isinstance(msg, AIMessage):
-                print(f"[EXTRACT] AIMessage found, len={len(msg.content)}", flush=True)
-                return _strip_suggestion_block(msg.content)
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                content = msg.get("content", "")
-                print(f"[EXTRACT] dict message found, len={len(content)}", flush=True)
-                return _strip_suggestion_block(content)
-        print("[EXTRACT] No AIMessage found in synthesize messages!", flush=True)
+    """Extract final AI message from graph stream event.
+
+    Priority:
+    1. synthesize node (normal multi-worker flow)
+    2. Any worker node as fallback (safety net for edge cases)
+
+    Only returns substantive responses (>50 chars) from workers to ignore plan announcements.
+    """
+    # Priority 1: synthesize — the designed final response path
+    if "synthesize" in event:
+        msg = _extract_ai_from_node(event["synthesize"])
+        if msg:
+            return _strip_suggestion_block(msg)
+
+    # Priority 2: fallback — any worker that emitted a substantive AIMessage
+    # This catches edge cases where synthesize bypass produces empty content
+    _WORKER_NODES = ("chat", "tutor", "research", "troubleshooting",
+                      "robot_operator", "analysis", "summarizer")
+    for node_name in _WORKER_NODES:
+        if node_name in event:
+            msg = _extract_ai_from_node(event[node_name])
+            # Only accept substantive messages (ignore plan announcements like "Voy a buscar...")
+            if msg and len(msg) > 50:
+                return _strip_suggestion_block(msg)
+
     return None
 
 
@@ -360,7 +411,13 @@ def extract_practice_data(graph, config: dict) -> Optional[dict]:
                 practice_update = output["practice_update"]
                 break
 
+        # Include practice_chunks if present (used by practice AND troubleshoot modes)
+        chunks = vals.get("practice_chunks", [])
+
         if not practice_update:
+            # No practice_update — but if there are chunks (e.g. troubleshoot mode), return them
+            if chunks:
+                return {"practice_chunks": chunks}
             return None
 
         result = {
@@ -369,8 +426,6 @@ def extract_practice_data(graph, config: dict) -> Optional[dict]:
             "step_completed": practice_update.get("step_completed", False),
         }
 
-        # Include practice_chunks if present (tool execution flow)
-        chunks = vals.get("practice_chunks", [])
         if chunks:
             result["practice_chunks"] = chunks
 
@@ -525,8 +580,45 @@ async def chat_stream(req: ChatRequest, auth=Depends(verify_auth)):
         except Exception as e:
             logger.warning(f"Could not fetch team_id for user {req.user_id}: {e}")
 
+    # ── Load conversation history from Supabase for session continuity ──
+    MAX_HISTORY_MESSAGES = 10
+    MAX_MESSAGE_CHARS = 1000
+
+    prior_messages = []
+    if req.session_id:
+        try:
+            from src.agent.services import get_supabase
+            sb = get_supabase()
+            if sb:
+                result = sb.schema("chat").from_("messages") \
+                    .select("sender, content") \
+                    .eq("session_id", req.session_id) \
+                    .order("created_at", desc=True) \
+                    .limit(MAX_HISTORY_MESSAGES + 1) \
+                    .execute()
+                if result and result.data:
+                    rows = list(reversed(result.data))  # Back to chronological
+                    for msg in rows:
+                        content = (msg.get("content") or "").strip()
+                        if not content:
+                            continue
+                        # Truncate long messages
+                        if len(content) > MAX_MESSAGE_CHARS:
+                            content = content[:MAX_MESSAGE_CHARS] + "..."
+                        if msg["sender"] == "user":
+                            prior_messages.append(HumanMessage(content=content))
+                        elif msg["sender"] == "ai":
+                            prior_messages.append(AIMessage(content=content))
+                    # Remove last if it duplicates current message
+                    if prior_messages and isinstance(prior_messages[-1], HumanMessage):
+                        if prior_messages[-1].content == message_text[:MAX_MESSAGE_CHARS]:
+                            prior_messages = prior_messages[:-1]
+                    logger.info(f"Loaded {len(prior_messages)} prior messages for session {req.session_id}")
+        except Exception as e:
+            logger.warning(f"Could not load session history: {e}")
+
     payload = {
-        "messages": [HumanMessage(content=message_text)],
+        "messages": prior_messages + [HumanMessage(content=message_text)],
         "user_name": req.user_name,
         "user_id": req.user_id,
         "auth_user_id": req.user_id,
@@ -543,22 +635,93 @@ async def chat_stream(req: ChatRequest, auth=Depends(verify_auth)):
         payload["automation_md_content"] = req.automation_md_content
     if req.automation_step is not None:
         payload["automation_step"] = req.automation_step
+    if req.equipment_id:
+        equipment_context = {"equipment_id": req.equipment_id}
+        # Resolve equipment details for the whole session
+        try:
+            from src.agent.services import get_supabase
+            sb = get_supabase()
+            if sb:
+                eq_result = sb.schema("lab").from_("equipment_profiles") \
+                    .select("name, brand, model, type, ip_address, description") \
+                    .eq("id", req.equipment_id) \
+                    .maybe_single() \
+                    .execute()
+                if eq_result and eq_result.data:
+                    eq = eq_result.data
+                    equipment_context.update({
+                        "equipment_name": eq.get("name", ""),
+                        "equipment_brand": eq.get("brand", ""),
+                        "equipment_model": eq.get("model", ""),
+                        "equipment_type": eq.get("type", ""),
+                        "equipment_ip": eq.get("ip_address", ""),
+                        "equipment_description": eq.get("description", ""),
+                    })
+
+                # Also get linked manual document IDs
+                doc_result = sb.schema("lab").from_("equipment_documents") \
+                    .select("document_id") \
+                    .eq("equipment_id", req.equipment_id) \
+                    .execute()
+                if doc_result and doc_result.data:
+                    equipment_context["equipment_doc_ids"] = [
+                        str(d["document_id"]) for d in doc_result.data
+                    ]
+        except Exception as e:
+            logger.warning(f"Could not resolve equipment details: {e}")
+
+        payload["pending_context"] = equipment_context
     
     async def event_generator() -> AsyncGenerator[str, None]:
         """Generate SSE events from LangGraph stream."""
         try:
             # Send session info
             yield sse_event("session", {"session_id": session_id})
-            
+            # Feedback inmediato al frontend
+            yield sse_event("thinking", {"node": "start", "message": "Procesando tu mensaje..."})
+
             final_response = None
             all_suggestions = []
             chart_payload = None
             interrupted = False
             interrupt_payload = None
+
+            # Narration rate limiter — max 6 per request, dedup by content prefix
+            _emitted_narrations = set()
+            _narration_count = 0
+            _MAX_NARRATIONS = 6
+
+            def _try_emit_narration(content: str, source: str, phase: str) -> Optional[str]:
+                nonlocal _narration_count
+                if _narration_count >= _MAX_NARRATIONS:
+                    return None
+                key = content[:80]
+                if key in _emitted_narrations:
+                    return None
+                _emitted_narrations.add(key)
+                _narration_count += 1
+                return sse_event("narration", {"content": content, "source": source, "phase": phase})
             
             # Run graph in a thread (LangGraph is sync)
             loop = asyncio.get_running_loop()
             event_queue: asyncio.Queue = asyncio.Queue()
+
+            # Real-time streaming callback for troubleshoot mode
+            def emit_practice_chunk(chunk_data: dict):
+                """Called by troubleshooter_node to stream chunks in real-time."""
+                sse_payload = {"__practice_chunk__": True, **chunk_data}
+                loop.call_soon_threadsafe(event_queue.put_nowait, sse_payload)
+
+            def emit_tool_lifecycle(event_data: dict):
+                """Called by ToolExecutor to stream tool lifecycle events in real-time."""
+                sse_payload = {"__tool_lifecycle__": True, **event_data}
+                loop.call_soon_threadsafe(event_queue.put_nowait, sse_payload)
+
+            # Registrar stream callback para TODOS los modos (excepto voice, que solo usa audio)
+            is_voice = (req.interaction_mode or "").lower() == "voice"
+            if not is_voice:
+                register_stream_callback(session_id, emit_practice_chunk)
+                payload["_stream_session_id"] = session_id
 
             def run_graph_with_queue():
                 """Run graph and put events in queue (thread-safe via call_soon_threadsafe)."""
@@ -583,11 +746,25 @@ async def chat_stream(req: ChatRequest, auth=Depends(verify_auth)):
                 
                 if event is None:
                     break  # Graph finished
-                
+
+                # Handle real-time streaming chunks from any worker
+                if isinstance(event, dict) and event.get("__practice_chunk__"):
+                    chunk_event = {k: v for k, v in event.items() if k != "__practice_chunk__"}
+                    yield sse_event("practice_chunk", chunk_event)
+                    # Partial chunks contain full CoT text — goes to final response, not narrations.
+                    # Only tool_status chunks are short enough for narration (emitted via node events).
+                    continue
+
+                # Handle tool lifecycle events from ToolExecutor
+                if isinstance(event, dict) and event.get("__tool_lifecycle__"):
+                    lifecycle_event = {k: v for k, v in event.items() if k != "__tool_lifecycle__"}
+                    yield sse_event("tool_lifecycle", lifecycle_event)
+                    continue
+
                 if "__error__" in event:
                     yield sse_event("error", {"message": event["__error__"]})
                     break
-                
+
                 # Check for interrupt (LangGraph emits __interrupt__ as tuple)
                 if isinstance(event, dict) and "__interrupt__" in event:
                     interrupted = True
@@ -604,8 +781,23 @@ async def chat_stream(req: ChatRequest, auth=Depends(verify_auth)):
                 
                 # Extract and send run events (thinking/processing indicators)
                 node_events = extract_events_from_node(event)
+                is_voice = (req.interaction_mode or "").lower() == "voice"
                 for evt in node_events:
                     yield sse_event("node_update", evt)
+                    # Re-emit narration events as SSE narration (rate-limited, deduped)
+                    if not is_voice and evt.get("type") == "narration":
+                        narr = _try_emit_narration(evt.get("content", ""), evt.get("source", ""), evt.get("phase", "thinking"))
+                        if narr:
+                            yield narr
+
+                # Si hay un event de planning, emitir thinking con el plan
+                if any(evt.get("type") == "plan" for evt in node_events):
+                    plan_evt = next((e for e in node_events if e.get("type") == "plan"), None)
+                    if plan_evt:
+                        yield sse_event("thinking", {
+                            "node": "planner",
+                            "message": plan_evt.get("content", "Planificando..."),
+                        })
 
                 # Extract suggestions
                 sugs = extract_suggestions(event)
@@ -764,10 +956,12 @@ async def chat_stream(req: ChatRequest, auth=Depends(verify_auth)):
                     print(f"[TOKENS] check_balance FAILED: {e}", flush=True)
                     logger.warning(f"Balance check failed: {e}")
             
+            unregister_stream_callback(session_id)
             yield sse_event("done", {"session_id": session_id})
-            
+
         except Exception as e:
             logger.error(f"Stream error: {e}", exc_info=True)
+            unregister_stream_callback(session_id)
             yield sse_event("error", {"message": str(e)})
             yield sse_event("done", {"session_id": session_id})
     
@@ -802,7 +996,9 @@ async def confirm_interrupt(req: ConfirmRequest, auth=Depends(verify_auth)):
             resume_payload = Command(resume=resume_data)
             
             logger.info(f"Confirm: resuming session {req.session_id} with answers type={type(req.answers).__name__}")
-            
+            # Feedback inmediato al frontend
+            yield sse_event("thinking", {"node": "start", "message": "Procesando tu respuesta..."})
+
             event_queue: asyncio.Queue = asyncio.Queue()
             loop = asyncio.get_running_loop()
 
@@ -979,12 +1175,37 @@ async def ws_robot(ws: WebSocket):
         return
 
     ROBOT_CONNECTIONS[robot_id] = ws
-    logger.info(f"Robot bridge connected: {robot_id}")
+
+    # Store metadata from init payload
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    meta = {
+        "type": init.get("type", init.get("robot_type", "unknown")),
+        "model": init.get("model", ""),
+        "protocol": init.get("protocol", "websocket"),
+        "capabilities": init.get("capabilities", []),
+        "ips": init.get("ips", []),
+        "last_heartbeat": now_iso,
+        "active_session": init.get("active_session"),
+    }
+    ROBOT_METADATA[robot_id] = meta
+
+    # Mirror to shared_state for worker access (avoids circular imports)
+    try:
+        from src.agent.shared_state import register_robot as _register_shared
+        _register_shared(robot_id, ws, meta)
+    except ImportError:
+        pass
+
+    logger.info(f"Robot bridge connected: {robot_id} (type={meta['type']}, model={meta['model']})")
     await ws.send_json({"type": "registered", "robot_id": robot_id})
 
     try:
         while True:
             data = await ws.receive_json()
+
+            # Update last_heartbeat on any valid message
+            if robot_id in ROBOT_METADATA:
+                ROBOT_METADATA[robot_id]["last_heartbeat"] = datetime.utcnow().isoformat() + "Z"
 
             # Handle command responses
             cmd_id = data.get("id")
@@ -995,23 +1216,130 @@ async def ws_robot(ws: WebSocket):
             # Handle unsolicited status updates
             if data.get("type") == "status_update":
                 logger.info(f"Robot {robot_id} status: {data}")
+
+                # Store latest status in metadata
+                if robot_id in ROBOT_METADATA:
+                    ROBOT_METADATA[robot_id]["last_status"] = data.get("status", {})
+
+                # Queue anomaly if error detected
+                status = data.get("status", {})
+                if status.get("error_code") or status.get("state") == "error":
+                    BRIDGE_ANOMALY_QUEUE.append({
+                        "robot_id": robot_id,
+                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                        "type": "bridge_alert",
+                        "data": data,
+                    })
     except WebSocketDisconnect:
         logger.info(f"Robot bridge disconnected: {robot_id}")
     except Exception as e:
         logger.warning(f"Robot bridge error ({robot_id}): {e}")
     finally:
         ROBOT_CONNECTIONS.pop(robot_id, None)
+        ROBOT_METADATA.pop(robot_id, None)
+        try:
+            from src.agent.shared_state import unregister_robot as _unregister_shared
+            _unregister_shared(robot_id)
+        except ImportError:
+            pass
 
 
 @app.get("/api/robots")
 async def list_robots():
-    """List currently connected robots."""
+    """List currently connected robots with metadata."""
+    robots = []
+    for rid in ROBOT_CONNECTIONS:
+        meta = ROBOT_METADATA.get(rid, {})
+        robots.append({
+            "robot_id": rid,
+            "connected": True,
+            "type": meta.get("type", "unknown"),
+            "model": meta.get("model", ""),
+            "protocol": meta.get("protocol", "websocket"),
+            "capabilities": meta.get("capabilities", []),
+            "ips": meta.get("ips", []),
+            "last_heartbeat": meta.get("last_heartbeat"),
+            "active_session": meta.get("active_session"),
+        })
+
+    # Summary by type
+    types = {}
+    for r in robots:
+        t = r["type"]
+        types[t] = types.get(t, 0) + 1
+
     return {
-        "robots": [
-            {"robot_id": rid, "connected": True}
-            for rid in ROBOT_CONNECTIONS
-        ],
-        "count": len(ROBOT_CONNECTIONS),
+        "robots": robots,
+        "count": len(robots),
+        "by_type": types,
+    }
+
+
+# ============================================
+# AMBIENT MONITOR
+# ============================================
+
+def _triage_anomalies(anomalies: list) -> dict:
+    """Classify anomalies into action categories.
+
+    Returns: {"auto_fix": [...], "diagnose": [...], "notify": [...]}
+    """
+    auto_fix = []
+    diagnose = []
+    notify = []
+
+    for a in anomalies:
+        severity = a.get("severity", "low")
+        atype = a.get("type", "")
+
+        if severity == "critical":
+            notify.append(a)
+        elif atype == "active_error" and severity in ("warning", "info"):
+            auto_fix.append(a)
+        elif atype == "station_offline":
+            diagnose.append(a)
+        else:
+            diagnose.append(a)
+
+    return {"auto_fix": auto_fix, "diagnose": diagnose, "notify": notify}
+
+
+@app.post("/api/monitor/tick")
+async def monitor_tick(auth=Depends(verify_auth)):
+    """Called by cron every 30-60s. Checks lab state and triages anomalies."""
+    connected_devices = {
+        rid: ROBOT_METADATA.get(rid, {})
+        for rid in ROBOT_CONNECTIONS
+    }
+
+    if not connected_devices:
+        return {"status": "idle", "reason": "no_devices_connected", "anomalies": 0}
+
+    anomalies = []
+
+    # --- Collect bridge anomalies ---
+    bridge_anomalies = list(BRIDGE_ANOMALY_QUEUE)
+    BRIDGE_ANOMALY_QUEUE.clear()
+    anomalies.extend([{
+        "type": "bridge_alert",
+        "robot_id": a["robot_id"],
+        "severity": "high",
+        "message": str(a.get("data", {}).get("status", {})),
+        "timestamp": a.get("timestamp"),
+    } for a in bridge_anomalies])
+
+    # Lab tools removed — health check via lab schema no longer available
+
+    if not anomalies:
+        return {"status": "healthy", "devices": len(connected_devices), "anomalies": 0}
+
+    triaged = _triage_anomalies(anomalies)
+
+    return {
+        "status": "anomalies_detected",
+        "devices": len(connected_devices),
+        "anomalies": len(anomalies),
+        "triaged": triaged,
     }
 
 
