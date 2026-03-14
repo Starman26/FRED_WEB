@@ -1,7 +1,7 @@
 """
-summarizer_node.py - Worker especializado en compresión de memoria
+summarizer_node.py - Memory compression worker.
 
-Se activa cuando window_count >= 12. Actualiza rolling_summary y resetea window_count.
+Activates when window_count >= 12. Updates rolling_summary and resets window_count.
 """
 import os
 from typing import Dict, Any, List
@@ -57,7 +57,7 @@ def extract_key_points(summary_text: str) -> List[str]:
 
 
 def summarizer_node(state: AgentState) -> Dict[str, Any]:
-    """Worker summarizer que comprime la memoria de la conversación."""
+    """Compress conversation memory into a rolling summary."""
     start_time = datetime.utcnow()
     logger.node_start("summarizer_node", {"window_count": state.get("window_count", 0)})
     events = [event_execute("summarizer", "Comprimiendo memoria...")]

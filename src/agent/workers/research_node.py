@@ -1,11 +1,8 @@
 """
-research_node.py - Worker especializado en investigación con RAG
+research_node.py - RAG research worker.
 
-Responsabilidad: recuperar evidencia de documentos internos (y web como fallback),
-sintetizar una respuesta fundamentada, y reportar confianza y gaps.
-
-NO es un answer-writer pulido — eso es trabajo de synthesize_node.
-Este worker prioriza: evidencia verificable > respuesta bonita.
+Retrieves evidence from internal docs (web as fallback), synthesizes a grounded
+answer, and reports confidence and gaps. Prioritizes verifiable evidence.
 """
 import os
 import json
@@ -33,10 +30,6 @@ from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report, event_error
 from src.agent.tools.db_tools.rag_tools import make_retrieve_tool, make_web_search_tool
 
-
-# ============================================
-# PROMPTS — simplified, evidence-first
-# ============================================
 
 _RESEARCH_SYSTEM = """You are a rigorous technical research worker.
 Your job is to answer a user's question using ONLY the provided evidence.
@@ -105,21 +98,15 @@ Respond with this exact JSON structure:
 }}"""
 
 
-# ============================================
-# JSON PARSING
-# ============================================
-
 def _safe_parse_json(text: str) -> Optional[dict]:
-    """Robust JSON extraction from LLM output."""
+    """Extract JSON from LLM output, handling markdown fences and extra text."""
     text = text.strip()
 
-    # Try direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Strip markdown fences
     if "```" in text:
         match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
         if match:
@@ -128,7 +115,6 @@ def _safe_parse_json(text: str) -> Optional[dict]:
             except json.JSONDecodeError:
                 pass
 
-    # Extract first {...} block
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end > start:
@@ -140,12 +126,9 @@ def _safe_parse_json(text: str) -> Optional[dict]:
     return None
 
 
-# ============================================
-# EVIDENCE HELPERS
-# ============================================
-
 def _unpack_retrieve_output(result: Any) -> Tuple[str, List[Document]]:
     """Unpack output from retrieve/search tools into (text, docs)."""
+
     if ToolMessage is not None and isinstance(result, ToolMessage):
         content = result.content or ""
         artifact = getattr(result, "artifact", None)
@@ -170,7 +153,7 @@ def _unpack_retrieve_output(result: Any) -> Tuple[str, List[Document]]:
 
 
 def _build_evidence_items(docs: List[Document], source_type: str = "internal") -> List[EvidenceItem]:
-    """Convert Documents to EvidenceItems with explicit source_type from the start."""
+    """Convert Documents to EvidenceItems."""
     items = []
     for doc in docs:
         meta = doc.metadata or {}
@@ -232,20 +215,15 @@ def _get_last_user_message(state: AgentState) -> str:
     return ""
 
 
-# ============================================
-# CONFIDENCE — hybrid (code + LLM signal)
-# ============================================
-
 def _compute_confidence(
     rag_count: int,
     web_count: int,
     gaps: list,
     llm_score: float,
 ) -> float:
-    """Hybrid confidence: structural heuristics + LLM signal as secondary input."""
+    """Blend structural heuristics (70%) with LLM self-reported confidence (30%)."""
     base = 0.15
 
-    # Evidence quantity
     if rag_count >= 3:
         base += 0.35
     elif rag_count >= 1:
@@ -254,29 +232,23 @@ def _compute_confidence(
     if web_count > 0:
         base += 0.10
 
-    # Penalties
     if gaps:
         base -= 0.10
     if rag_count == 0 and web_count == 0:
         return 0.05
 
-    # Blend with LLM score (30% weight)
     blended = base * 0.7 + llm_score * 0.3
     return round(min(max(blended, 0.0), 1.0), 2)
 
 
 def _compute_status(rag_count: int, web_count: int, confidence: float) -> str:
-    """Determine research status from evidence and confidence."""
+    """Determine research status from evidence count and confidence."""
     if rag_count == 0 and web_count == 0:
         return "no_evidence"
     if confidence >= 0.5 and rag_count >= 1:
         return "ok"
     return "partial"
 
-
-# ============================================
-# RETRIEVAL STAGES
-# ============================================
 
 def _run_rag_retrieval(
     user_query: str,
@@ -322,10 +294,6 @@ def _run_web_fallback(
     return items
 
 
-# ============================================
-# SYNTHESIS
-# ============================================
-
 def _synthesize(
     llm,
     user_query: str,
@@ -333,10 +301,7 @@ def _synthesize(
     web_items: List[EvidenceItem],
     prior_context: str,
 ) -> Tuple[str, float, list, int]:
-    """
-    Synthesize evidence into an answer.
-    Returns (answer, llm_confidence, gaps, tokens_used).
-    """
+    """Synthesize evidence into (answer, llm_confidence, gaps, tokens_used)."""
     has_web = len(web_items) > 0
     rag_text = _format_evidence_text(rag_items)
 
@@ -378,20 +343,15 @@ def _synthesize(
     return answer, llm_confidence, gaps, tokens
 
 
-# ============================================
-# MAIN NODE
-# ============================================
-
 WEB_SEARCH_CONFIDENCE_THRESHOLD = 0.4
 
 
 def research_node(state: AgentState) -> Dict[str, Any]:
-    """Research worker: RAG retrieval → synthesis → optional web fallback → output."""
+    """RAG retrieval, synthesis, optional web fallback."""
     start_time = datetime.utcnow()
     logger.node_start("research_node", {"task": "research"})
     events = [event_execute("research", "Iniciando búsqueda en documentos...")]
 
-    # - Setup -
     supabase, embeddings = get_supabase(), get_embeddings()
     if not supabase or not embeddings:
         err = create_error_output("research", "TOOLS_UNAVAILABLE", "No hay conexión con la base de conocimientos")
@@ -407,7 +367,6 @@ def research_node(state: AgentState) -> Dict[str, Any]:
 
     logger.info("research_node", f"Query: {user_query[:100]}...")
 
-    # - RAG Retrieval -
     try:
         rag_items, serialized_content = _run_rag_retrieval(user_query, supabase, embeddings, stream)
     except Exception as e:
@@ -415,7 +374,6 @@ def research_node(state: AgentState) -> Dict[str, Any]:
         err = create_error_output("research", "RAG_ERROR", f"Error en búsqueda: {str(e)}")
         return {"worker_outputs": [err.model_dump()], "research_result": err.model_dump_json(), "events": events}
 
-    # - First Synthesis (RAG only) -
     total_tokens = 0
     prior_context = _get_prior_context(state)
     web_items: List[EvidenceItem] = []
@@ -431,7 +389,6 @@ def research_node(state: AgentState) -> Dict[str, Any]:
         llm_confidence = 0.3
         gaps = []
 
-    # - Web Fallback (if low confidence or no evidence) -
     rag_count = len(rag_items)
     initial_confidence = _compute_confidence(rag_count, 0, gaps, llm_confidence)
 
@@ -443,7 +400,6 @@ def research_node(state: AgentState) -> Dict[str, Any]:
             web_items = _run_web_fallback(user_query, stream)
 
             if web_items:
-                # Re-synthesize with combined evidence
                 try:
                     stream.status("Re-sintetizando con evidencia combinada...")
                     answer, llm_confidence, gaps, tokens = _synthesize(
@@ -452,17 +408,14 @@ def research_node(state: AgentState) -> Dict[str, Any]:
                     total_tokens += tokens
                 except Exception as e:
                     logger.warning("research_node", f"Combined synthesis error: {e}")
-                    # Keep RAG-only synthesis
         except Exception as e:
             logger.warning("research_node", f"Web fallback error: {e}")
 
-    # - Build Output -
     web_count = len(web_items)
     all_evidence = rag_items + web_items
     confidence = _compute_confidence(rag_count, web_count, gaps, llm_confidence)
     status = _compute_status(rag_count, web_count, confidence)
 
-    # Summary message
     if all_evidence:
         parts = []
         if rag_count:
@@ -494,7 +447,6 @@ def research_node(state: AgentState) -> Dict[str, Any]:
         "web_results_count": web_count,
     }
 
-    # - Final logging -
     web_note = f" + {web_count} web" if web_count else ""
     logger.node_end("research_node", {
         "documents_found": len(all_evidence),

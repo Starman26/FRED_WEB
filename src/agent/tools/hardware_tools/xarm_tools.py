@@ -1,5 +1,5 @@
 """
-xarm_tools.py — Agent tools for xArm 6 Lite robots.
+Agent tools for xArm 6 Lite robots.
 
 All tools use edge_router.send_command(device_type="xarm", ...).
 Mock handlers simulate xArm SDK responses for testing without hardware.
@@ -10,10 +10,6 @@ from typing import Dict, Any
 from langchain_core.tools import tool
 from .edge_router import send_command, send_command_multi, parse_device_ids, register_mock_handler
 
-
-# ═══════════════════════════════════════════════════════════════
-# Mock state + handlers
-# ═══════════════════════════════════════════════════════════════
 
 JOINT_NAMES = {
     1: "Base", 2: "Shoulder", 3: "Elbow",
@@ -26,12 +22,25 @@ JOINT_LIMITS = {
 }
 
 POSES = {
-    "home": [0, 0, 0, 0, 0, 0],
+    "home": [0, -45, -25, 0, 70, 0],
     "pick": [0, -30, 60, 0, 90, 0],
     "place": [90, -30, 60, 0, 90, 0],
     "ready": [0, -45, 30, 0, 45, 0],
     "inspect": [0, -60, 90, 0, 30, 0],
 }
+
+# Safe demo ranges per joint (degrees, conservative)
+JOINT_DEMO_RANGES = {
+    1: 20,   # Base: ±20° — wide rotation, very visible
+    2: 10,   # Shoulder: ±10° — heavy joint, keep small
+    3: 15,   # Elbow: ±15° — visible bend
+    4: 20,   # Wrist Roll: ±20° — light joint, easy to see
+    5: 10,   # Wrist Pitch: ±10° — small but visible
+    6: 20,   # Wrist Yaw: ±20° — light, spins easily
+}
+
+# Safe starting position for demo (slightly raised, clear of table)
+DEMO_START_POSITION = {"x": 250.0, "y": 0.0, "z": 350.0}
 
 _mock_state: Dict[str, Any] = {
     "joints": [0.0] * 6,
@@ -114,8 +123,8 @@ def _mock_move_linear(params: dict, device_id: str) -> dict:
 
 
 def _mock_go_home(params: dict, device_id: str) -> dict:
-    _mock_state["joints"] = [0.0] * 6
-    _mock_state["tcp"] = {"x": 207.0, "y": 0.0, "z": 112.0, "roll": 180.0, "pitch": 0.0, "yaw": 0.0}
+    _mock_state["joints"] = [0.0, -45.0, -25.0, 0.0, 70.0, 0.0]
+    _mock_state["tcp"] = {"x": 255.0, "y": 0.0, "z": 370.0, "roll": 180.0, "pitch": 0.0, "yaw": 0.0}
     return {
         "code": 0,
         "final_tcp": dict(_mock_state["tcp"]),
@@ -187,7 +196,82 @@ def _mock_demo_movement(params: dict, device_id: str) -> dict:
     }
 
 
-# Register all mock handlers
+def _mock_clear_error(params: dict, device_id: str) -> dict:
+    _mock_state["error_code"] = 0
+    _mock_state["warning_code"] = 0
+    _mock_state["mode"] = "position control"
+    return {
+        "code": 0,
+        "error_cleared": True,
+        "previous_error": _mock_state.get("error_code", 0),
+        "state": "ready",
+        "mode": "position control",
+    }
+
+
+def _mock_set_collision_sensitivity(params: dict, device_id: str) -> dict:
+    level = params.get("level", 3)
+    if level < 1 or level > 5:
+        raise ValueError(f"Sensitivity level must be 1-5, got {level}")
+    return {
+        "code": 0,
+        "sensitivity_level": level,
+        "description": {
+            1: "Very low — ignores most collisions",
+            2: "Low — tolerates moderate forces",
+            3: "Medium — balanced (default)",
+            4: "High — sensitive to light contact",
+            5: "Very high — stops on minimal force",
+        }.get(level, "Unknown"),
+    }
+
+
+def _mock_show_all_joints(params: dict, device_id: str) -> dict:
+    speed = params.get("speed", 15)
+    sequence = []
+
+    for jid in range(1, 7):
+        name = JOINT_NAMES[jid]
+        demo_range = JOINT_DEMO_RANGES[jid]
+        sequence.append({
+            "joint": jid,
+            "name": name,
+            "movement": f"0° → +{demo_range}° → -{demo_range}° → 0°",
+            "demo_range_deg": demo_range,
+        })
+
+    return {
+        "code": 0,
+        "start_position": DEMO_START_POSITION,
+        "speed_deg_s": speed,
+        "sequence": sequence,
+        "total_joints": 6,
+        "feedback": "Demostración completa: el robot movió cada joint individualmente",
+        "safety_note": f"Velocidad limitada a {speed} deg/s durante demostración",
+    }
+
+
+def _mock_say_hi(params: dict, device_id: str) -> dict:
+    speed = params.get("speed", 25)
+
+    wave_sequence = [
+        {"action": "go_home", "description": "Moving to safe position"},
+        {"action": "wave_1", "joints": {"J1": 20, "J6": 30}, "description": "Wave right + wrist twist"},
+        {"action": "wave_2", "joints": {"J1": -20, "J6": -30}, "description": "Wave left + wrist twist back"},
+        {"action": "wave_3", "joints": {"J1": 20, "J6": 30}, "description": "Wave right again"},
+        {"action": "wave_4", "joints": {"J1": -20, "J6": -30}, "description": "Wave left again"},
+        {"action": "wave_5", "joints": {"J1": 0, "J6": 0}, "description": "Return to center"},
+    ]
+
+    return {
+        "code": 0,
+        "sequence": wave_sequence,
+        "speed_deg_s": speed,
+        "feedback": "Robot saludó moviendo la base y la muñeca",
+        "safety_note": f"Animación a {speed} deg/s desde posición segura",
+    }
+
+
 _MOCK_MAP = {
     "get_position": _mock_get_position,
     "get_full_status": _mock_get_full_status,
@@ -200,15 +284,15 @@ _MOCK_MAP = {
     "highlight_joint": _mock_highlight_joint,
     "show_workspace": _mock_show_workspace,
     "demo_movement": _mock_demo_movement,
+    "clear_error": _mock_clear_error,
+    "set_collision_sensitivity": _mock_set_collision_sensitivity,
+    "show_all_joints": _mock_show_all_joints,
+    "say_hi": _mock_say_hi,
 }
 
 for action, handler in _MOCK_MAP.items():
     register_mock_handler("xarm", action, handler)
 
-
-# ═══════════════════════════════════════════════════════════════
-# Agent tools (LangChain @tool)
-# ═══════════════════════════════════════════════════════════════
 
 def _send(action: str, params: dict = None, device_id: str = "") -> str:
     result = send_command("xarm", action, params or {}, device_id)
@@ -243,14 +327,14 @@ def xarm_get_full_status(device_id: str = "") -> str:
 
 
 @tool
-def xarm_move_joint(joint_id: int, angle: float, speed: int = 30, device_id: str = "") -> str:
+def xarm_move_joint(joint_id: int, angle: float, speed: int = 50, device_id: str = "") -> str:
     """Move a specific xArm joint to a target angle.
 
     Args:
         joint_id: Joint number (1-6). 1=Base, 2=Shoulder, 3=Elbow,
                   4=Wrist Roll, 5=Wrist Pitch, 6=Wrist Yaw.
         angle: Target angle in degrees.
-        speed: Movement speed in deg/s (default 30).
+        speed: Movement speed in deg/s (default 50).
         device_id: Robot device ID.
 
     Returns:
@@ -260,14 +344,14 @@ def xarm_move_joint(joint_id: int, angle: float, speed: int = 30, device_id: str
 
 
 @tool
-def xarm_move_linear(x: float, y: float, z: float, speed: int = 50, device_id: str = "") -> str:
+def xarm_move_linear(x: float, y: float, z: float, speed: int = 100, device_id: str = "") -> str:
     """Move xArm TCP in a straight line to XYZ coordinates (mm).
 
     Args:
         x: Target X in mm.
         y: Target Y in mm.
         z: Target Z in mm.
-        speed: Movement speed in mm/s (default 50).
+        speed: Movement speed in mm/s (default 100).
         device_id: Robot device ID.
 
     Returns:
@@ -278,7 +362,10 @@ def xarm_move_linear(x: float, y: float, z: float, speed: int = 50, device_id: s
 
 @tool
 def xarm_go_home(device_id: str = "") -> str:
-    """Send xArm to home position (all joints to 0°).
+    """Send xArm to safe home position (brazo levantado, centrado).
+
+    Joints: J1=0, J2=-45, J3=-25, J4=0, J5=70, J6=0
+    This position keeps the gripper clear of the table/floor.
 
     Args:
         device_id: Robot device ID.
@@ -294,7 +381,7 @@ def xarm_go_to_pose(pose: str = "home", device_id: str = "") -> str:
     """Move xArm to a predefined pose.
 
     Args:
-        pose: Pose name — one of: home, pick, place, ready, inspect.
+        pose: Pose name, one of: home, pick, place, ready, inspect.
         device_id: Robot device ID.
 
     Returns:
@@ -372,17 +459,93 @@ def xarm_demo_movement(pattern: str = "pick_and_place", device_id: str = "") -> 
     return _send("demo_movement", {"pattern": pattern}, device_id)
 
 
-# ═══════════════════════════════════════════════════════════════
-# Exports
-# ═══════════════════════════════════════════════════════════════
+@tool
+def xarm_clear_error(device_id: str = "") -> str:
+    """Clear error state on xArm and return to ready mode.
+
+    Use this after a collision, e-stop, or any error_code != 0.
+    The robot must be physically safe before clearing — verify no obstructions first.
+
+    Args:
+        device_id: Robot device ID.
+
+    Returns:
+        JSON with error_cleared status, previous error code, and new state.
+    """
+    return _send("clear_error", device_id=device_id)
+
+
+@tool
+def xarm_set_collision_sensitivity(level: int = 3, device_id: str = "") -> str:
+    """Set the collision detection sensitivity level on xArm.
+
+    Level 1 = very low (ignores most collisions, for heavy payloads).
+    Level 3 = medium (default, balanced).
+    Level 5 = very high (stops on minimal force, safest for teaching).
+
+    Args:
+        level: Sensitivity level 1-5 (default 3).
+        device_id: Robot device ID.
+
+    Returns:
+        JSON with sensitivity_level set and description.
+    """
+    return _send("set_collision_sensitivity", {"level": level}, device_id)
+
+
+@tool
+def xarm_show_all_joints(speed: int = 15, device_id: str = "") -> str:
+    """Demonstrate all 6 joints one by one for teaching purposes.
+
+    The robot first moves to a safe position (X=250, Y=0, Z=350mm),
+    then moves each joint individually through a safe range:
+    - J1 Base: ±20°
+    - J2 Shoulder: ±10°
+    - J3 Elbow: ±15°
+    - J4 Wrist Roll: ±20°
+    - J5 Wrist Pitch: ±10°
+    - J6 Wrist Yaw: ±20°
+
+    Each joint returns to 0° before the next one moves.
+
+    Args:
+        speed: Demo speed in deg/s (default 15, slow for visibility).
+        device_id: Robot device ID.
+
+    Returns:
+        JSON with start_position, sequence of joint demos, and safety note.
+    """
+    return _send("show_all_joints", {"speed": speed}, device_id)
+
+
+@tool
+def xarm_say_hi(speed: int = 25, device_id: str = "") -> str:
+    """Make the xArm wave hello! The robot goes to safe home position first,
+    then waves by rotating the base (J1) left and right while twisting
+    the wrist (J6) back and forth simultaneously.
+
+    Fun tool for demos and greeting students.
+
+    Args:
+        speed: Wave speed in deg/s (default 25).
+        device_id: Robot device ID.
+
+    Returns:
+        JSON with wave sequence and safety note.
+    """
+    return _send("say_hi", {"speed": speed}, device_id)
+
 
 XARM_READ_TOOLS = [xarm_get_position, xarm_get_full_status]
 
 XARM_ACTUATE_TOOLS = [
     xarm_move_joint, xarm_move_linear, xarm_go_home,
     xarm_go_to_pose, xarm_gripper, xarm_emergency_stop,
+    xarm_clear_error,
 ]
 
-XARM_DEMO_TOOLS = [xarm_highlight_joint, xarm_show_workspace, xarm_demo_movement]
+XARM_CONFIG_TOOLS = [xarm_set_collision_sensitivity]
 
-XARM_TOOLS = XARM_READ_TOOLS + XARM_ACTUATE_TOOLS + XARM_DEMO_TOOLS
+XARM_DEMO_TOOLS = [xarm_highlight_joint, xarm_show_workspace, xarm_demo_movement, xarm_show_all_joints, xarm_say_hi]
+
+XARM_TOOLS = XARM_READ_TOOLS + XARM_ACTUATE_TOOLS + XARM_CONFIG_TOOLS + XARM_DEMO_TOOLS

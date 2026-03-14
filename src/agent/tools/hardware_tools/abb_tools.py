@@ -1,7 +1,7 @@
 """
-abb_tools.py — Agent tools for ABB IRB robots.
+Agent tools for ABB IRB robots.
 
-Communicates via edge_router → lab bridge → RobotController (socket TCP:1025).
+Communicates via edge_router > lab bridge > RobotController (socket TCP:1025).
 ABB uses TCP cartesian coordinates + quaternion/euler orientation.
 """
 
@@ -12,12 +12,8 @@ from langchain_core.tools import tool
 from .edge_router import send_command, register_mock_handler
 
 
-# ═══════════════════════════════════════════════════════════════
-# Euler ↔ Quaternion (ABB ZYX convention) — for mock display
-# ═══════════════════════════════════════════════════════════════
-
 def _euler_to_quat(ex: float, ey: float, ez: float):
-    """ABB Euler (deg, ZYX extrinsic) → quaternion (q1=w, q2=x, q3=y, q4=z)."""
+    """ABB Euler (deg, ZYX extrinsic) to quaternion (q1=w, q2=x, q3=y, q4=z)."""
     hx, hy, hz = math.radians(ex / 2), math.radians(ey / 2), math.radians(ez / 2)
     cx, sx = math.cos(hx), math.sin(hx)
     cy, sy = math.cos(hy), math.sin(hy)
@@ -31,7 +27,7 @@ def _euler_to_quat(ex: float, ey: float, ez: float):
 
 
 def _quat_to_euler(q1, q2, q3, q4):
-    """Quaternion → ABB Euler (deg)."""
+    """Quaternion to ABB Euler (deg)."""
     sinp = max(-1.0, min(1.0, 2.0 * (q1 * q3 - q4 * q2)))
     ey = math.degrees(math.asin(sinp))
     if abs(sinp) > 0.9999:
@@ -42,10 +38,6 @@ def _quat_to_euler(q1, q2, q3, q4):
         ez = math.degrees(math.atan2(2.0 * (q1 * q4 + q2 * q3), 1.0 - 2.0 * (q3**2 + q4**2)))
     return round(ex, 2), round(ey, 2), round(ez, 2)
 
-
-# ═══════════════════════════════════════════════════════════════
-# Mock state
-# ═══════════════════════════════════════════════════════════════
 
 _DEFAULT_EULER = (180.0, 0.0, 0.0)
 _DEFAULT_QUAT = _euler_to_quat(*_DEFAULT_EULER)
@@ -70,17 +62,12 @@ def _mock_pos_dict() -> dict:
     }
 
 
-# ═══════════════════════════════════════════════════════════════
-# Mock handlers
-# ═══════════════════════════════════════════════════════════════
-
 def _mock_get_position(params: dict, device_id: str) -> dict:
     return {"position": _mock_pos_dict(), "state": "static"}
 
 
 def _mock_move_linear(params: dict, device_id: str) -> dict:
     x, y, z = params["x"], params["y"], params["z"]
-    # Resolve orientation
     if "q1" in params:
         q = (params["q1"], params.get("q2", 0), params.get("q3", 0), params.get("q4", 0))
     elif "ex" in params:
@@ -128,7 +115,6 @@ def _mock_set_speed(params: dict, device_id: str) -> dict:
     return {"speed_set": speed}
 
 
-# Register mocks
 for action, handler in {
     "get_position": _mock_get_position,
     "move_linear": _mock_move_linear,
@@ -138,10 +124,6 @@ for action, handler in {
 }.items():
     register_mock_handler("abb", action, handler)
 
-
-# ═══════════════════════════════════════════════════════════════
-# Agent tools
-# ═══════════════════════════════════════════════════════════════
 
 def _send(action: str, params: dict = None, device_id: str = "") -> str:
     result = send_command("abb", action, params or {}, device_id)
@@ -239,10 +221,6 @@ def abb_set_speed(speed: int = 100, device_id: str = "") -> str:
     """
     return _send("set_speed", {"speed": speed}, device_id)
 
-
-# ═══════════════════════════════════════════════════════════════
-# Exports
-# ═══════════════════════════════════════════════════════════════
 
 ABB_READ_TOOLS = [abb_get_position]
 ABB_ACTUATE_TOOLS = [abb_move_linear, abb_move_joint, abb_go_home]

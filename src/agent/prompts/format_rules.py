@@ -1,8 +1,7 @@
 """
-format_rules.py - Reglas de formato Markdown compartidas entre todos los workers.
+format_rules.py
 
-Se inyecta en cada system prompt via {format_rules} para asegurar
-consistencia en la estructura de las respuestas.
+Shared Markdown formatting rules injected into all worker system prompts.
 """
 
 MARKDOWN_FORMAT_RULES = """

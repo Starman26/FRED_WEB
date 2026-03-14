@@ -1,17 +1,5 @@
 """
-voice_service.py - ElevenLabs TTS streaming service
-
-Provides chunked audio streaming from text via ElevenLabs API.
-Registered in ServiceRegistry as "elevenlabs".
-
-Usage:
-    from src.agent.services import get_elevenlabs
-
-    voice = get_elevenlabs()
-    if voice:
-        for chunk in voice.stream_tts("Hello world"):
-            # chunk is bytes (MP3 data)
-            ...
+voice_service.py - ElevenLabs TTS streaming service.
 """
 import os
 import logging
@@ -19,16 +7,12 @@ from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
-# ── Defaults ──
-DEFAULT_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"  # "George" - clear multilingual voice
+DEFAULT_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"  # "George"
 DEFAULT_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_OUTPUT_FORMAT = "mp3_44100_128"
 
-# Chunk accumulation target: ~4KB per SSE event.
-# ElevenLabs streams very small fragments (~128-512 bytes).
-# Accumulating to ~4KB reduces SSE overhead while keeping latency low.
-# At 128kbps MP3, 4KB ≈ 0.25 seconds of audio.
-CHUNK_ACCUMULATION_TARGET = 4096  # bytes
+# Accumulate small ElevenLabs fragments (~128-512B) into ~4KB chunks to reduce SSE overhead
+CHUNK_ACCUMULATION_TARGET = 4096
 
 
 class VoiceService:
@@ -62,24 +46,11 @@ class VoiceService:
         text: str,
         voice_id: Optional[str] = None,
     ) -> Iterator[bytes]:
-        """
-        Stream TTS audio chunks from ElevenLabs.
-
-        Yields accumulated MP3 byte chunks of approximately
-        CHUNK_ACCUMULATION_TARGET size. The final chunk may be smaller.
-
-        Args:
-            text: The text to convert to speech.
-            voice_id: Override the default voice for this call.
-
-        Yields:
-            bytes: MP3 audio data chunks.
-        """
+        """Stream TTS audio as accumulated MP3 byte chunks."""
         vid = voice_id or self.voice_id
         print(f"[VoiceService] stream_tts: text_len={len(text)}, voice={vid}, model={self.model_id}", flush=True)
 
         try:
-            # ElevenLabs SDK v2.x: use .stream() for streaming Iterator[bytes]
             raw_stream = self._client.text_to_speech.stream(
                 text=text,
                 voice_id=vid,
@@ -121,7 +92,6 @@ class VoiceService:
                 buffer = buffer[CHUNK_ACCUMULATION_TARGET:]
                 chunks_yielded += 1
 
-        # Flush remaining bytes
         if buffer:
             yield buffer
             chunks_yielded += 1

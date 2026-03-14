@@ -1,13 +1,8 @@
 """
-planner.py - ReAct Planner: análisis de intención + planificación en un solo nodo
+ReAct Planner: fuses intent analysis + plan generation in one node.
 
-Reemplaza intent_analyzer_node + orchestrator_plan_node con un diseño más inteligente:
-
-  Fast-path (~70%): Regex → plan directo en <1ms, 0 LLM calls
-  Smart-path (~30%): 1 LLM call con chain-of-thought reasoning
-
-Flujo en el grafo:
-  bootstrap → planner → [worker₁ → route → worker₂ → ...] → synthesize → END
+Fast-path (~70%): Regex -> direct plan, 0 LLM calls, <1ms
+Smart-path (~30%): 1 LLM call with chain-of-thought reasoning
 """
 import os
 import re
@@ -22,10 +17,6 @@ from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_plan, event_report, event_error, event_narration
 
 
-# ============================================
-# CONSTANTS
-# ============================================
-
 FAST_CONFIDENCE_THRESHOLD = 0.85
 
 VALID_WORKERS = {
@@ -33,10 +24,6 @@ VALID_WORKERS = {
     "summarizer", "robot_operator", "analysis", "practice",
 }
 
-
-# ============================================
-# REACT PLANNER PROMPT (smart-path)
-# ============================================
 
 REACT_PLANNER_PROMPT = """You are the Planner for ORION, a multi-agent system for a manufacturing laboratory.
 
@@ -93,11 +80,7 @@ Respond ONLY with valid JSON:
 }}"""
 
 
-# ╔══════════════════════════════════════════════════════════════════════╗
-# ║  FAST INTENT: COMPILED REGEX & LOOKUP SETS (module-level, once)    ║
-# ╚══════════════════════════════════════════════════════════════════════╝
-
-# ── Sets for O(1) exact-match lookups ──
+# Fast intent: compiled regex & lookup sets
 
 _GREETINGS: set = {
     "hola", "hey", "buenas", "buen día", "buen dia", "buenos días",
@@ -121,17 +104,13 @@ _FAREWELLS: set = {
     "hasta pronto", "me voy", "ya me voy",
 }
 
-# ── Compiled regex patterns (compiled ONCE at import time) ──
-
 _RE_NAME = re.compile(r"(?:me llamo|mi nombre es|soy|me dicen|dime)\s+(\w+)")
 
-# Entities
 _RE_STATION = re.compile(r"estaci[oó]n\s*([1-6])|est\.?\s*([1-6])")
 _RE_EQUIPMENT_COBOT = re.compile(r"cobot|robot(?!\s*xarm)|brazo\s*robot")
 _RE_EQUIPMENT_DOOR = re.compile(r"puerta|door")
 _RE_ROUTINE = re.compile(r"rutina\s*(\d+)|modo\s*(\d+)")
 
-# Robot xARM
 _ROBOT_PATTERNS: list = [
     (re.compile(r"(?:mueve?|mover)\s+(?:el\s+)?(?:robot|xarm|brazo).*?([xyz]).*?([-+]?\d+)"), "robot_move"),
     (re.compile(r"(?:mueve?|mover)\s+([xyz])\s*([-+]?\d+)"), "robot_move"),
@@ -145,7 +124,6 @@ _ROBOT_PATTERNS: list = [
     (re.compile(r"(?:estado|status)\s*(?:del?\s+)?(?:robot|xarm|brazo)"), "robot_status"),
     (re.compile(r"(?:velocidad|speed)\s*(?:del?\s+)?(?:robot|xarm|brazo)"), "robot_get_speed"),
     (re.compile(r"(?:cambia|cambiar|set|pon|poner)\s*(?:la\s+)?(?:velocidad|speed).*?(\d+)"), "robot_set_speed"),
-    # ABB patterns
     (re.compile(r"(?:mueve?|mover)\s+(?:el\s+)?(?:abb|irb).*?([xyz]).*?([-+]?\d+)"), "robot_move"),
     (re.compile(r"(?:mueve?|mover)\s+(?:el\s+)?(?:abb|irb).*?(arriba|abajo|izquierda|derecha|adelante|atr[aá]s).*?(\d+)"), "robot_move_direction"),
     (re.compile(r"(?:abb|irb).*?(?:a\s+)?(?:home|posici[oó]n\s+inicial|inicio)"), "robot_home"),
@@ -163,7 +141,6 @@ _RE_EMERGENCY = re.compile(
     r"para\s+todo|frena)"
 )
 
-# PLC / Health
 _RE_PLC_PING = re.compile(
     r"ping\s*pong|"
     r"ping\s+(?:la\s+|el\s+)?(?:plc|ip|direcci[oó]n)|"
@@ -173,7 +150,6 @@ _RE_PLC_PING = re.compile(
     r"salud\s+(?:del?\s+)?(?:plc|estaci[oó]n|lab)"
 )
 
-# Lab commands
 _LAB_COMMANDS: list = [
     (re.compile(r"(?:inici|arranca|ejecuta|enciend|activa|corre|lanza)\w*\s+(?:el\s+|la\s+)?(?:cobot|robot|brazo|rutina|estaci[oó]n)"), "start_cobot"),
     (re.compile(r"(?:cobot|robot|brazo|rutina|estaci[oó]n)\s+(?:inici|arranca|ejecuta|enciend|activa)"), "start_cobot"),
@@ -189,7 +165,6 @@ _LAB_COMMANDS: list = [
     (re.compile(r"(?:arregl\w*|fix|repar\w*|compone?r?)\s+(?:el\s+)?(?:cobot|robot|plc|estaci[oó]n|lab)"), "auto_fix"),
 ]
 
-# Status queries
 _RE_CHECK_ERRORS = re.compile(r"(?:hay|tiene|existen?)\s*(?:alg[uú]n|alg[uú]nos?)?\s*error")
 _RE_DOOR_STATUS = re.compile(
     r"(?:hay|tiene|est[aá]n?|cu[aá]l|checa|checar|revisa|revisar|verifica|verificar)\s*(?:las?\s+)?puertas?|"
@@ -210,14 +185,12 @@ _RE_GENERAL_STATUS = re.compile(
     r"dame\s+(?:el\s+)?(?:estado|status|resumen)"
 )
 
-# Troubleshoot
 _RE_PROBLEMS = re.compile(
     r"no\s+(?:conecta|funciona|responde|enciende|arranca|prende|carga|sirve)|"
     r"fall[oó]|problema|se\s+(?:trab[oó]|cay[oó]|congel[oó]|qued[oó])|"
     r"est[aá]\s+(?:fallando|muerto|ca[ií]do|trabado)"
 )
 
-# Learn / Tutor
 _RE_LEARN = re.compile(
     r"c[oó]mo\s+funciona|explic(?:a|ar|ame)|qu[eé]\s+es|"
     r"ense[ñn](?:a|ar|ame)|aprender|tutorial|"
@@ -226,13 +199,11 @@ _RE_LEARN = re.compile(
 )
 _RE_NEEDS_RESEARCH = re.compile(r"paper|documento|buscar|seg[uú]n|art[ií]culo|estudio")
 
-# Research
 _RE_RESEARCH = re.compile(
     r"paper|documento|busca(?:r)?|referencia|seg[uú]n|cita|fuente|"
     r"art[ií]culo|investigaci[oó]n|estudio|bibliograf"
 )
 
-# Urgency / Sentiment
 _RE_URGENCY_HIGH = re.compile(r"urgente|cr[ií]tico|emergencia|grave|ya\s*!|ayuda\s*!")
 _RE_URGENCY_MEDIUM = re.compile(r"error|falla|no funciona")
 _RE_SENTIMENT_CONFUSED = re.compile(r"no entiendo|confundid[oa]|cu[aá]l|no\s+s[eé]|me\s+perd[ií]")
@@ -242,12 +213,8 @@ _RE_SENTIMENT_FRUSTRATED = re.compile(
 )
 
 
-# ============================================
-# FAST INTENT: HELPERS
-# ============================================
-
 def _make_base(message: str) -> Dict[str, Any]:
-    """Crea el dict base con valores por defecto."""
+    """Default intent analysis dict."""
     return {
         "intent": "chat",
         "action": None,
@@ -264,7 +231,7 @@ def _make_base(message: str) -> Dict[str, Any]:
 
 
 def _extract_entities(msg: str) -> Dict[str, Any]:
-    """Extrae entidades comunes del mensaje (estación, equipo, rutina)."""
+    """Extract entities (station, equipment, routine) from message."""
     entities: Dict[str, Any] = {
         "station": None, "equipment": None, "routine": None, "error_type": None,
     }
@@ -284,14 +251,14 @@ def _extract_entities(msg: str) -> Dict[str, Any]:
 
 
 def _flag_clarification(base: Dict[str, Any], reason: str) -> None:
-    """Marca que se necesita clarificación si no hay estación."""
+    """Flag clarification needed when no station is specified."""
     if not base["entities"].get("station"):
         base["needs_clarification"] = True
         base["clarification_reason"] = reason
 
 
 def _enrich_urgency_sentiment(base: Dict[str, Any], msg: str) -> None:
-    """Enriquece urgencia y sentimiento (mutación in-place)."""
+    """Enrich urgency and sentiment fields in-place."""
     if _RE_URGENCY_HIGH.search(msg):
         base["urgency"] = "high"
     elif _RE_URGENCY_MEDIUM.search(msg):
@@ -302,21 +269,12 @@ def _enrich_urgency_sentiment(base: Dict[str, Any], msg: str) -> None:
         base["sentiment"] = "frustrated"
 
 
-# ============================================
-# FAST INTENT ANALYSIS (compiled regex version)
-# ============================================
-
 def _fast_intent_analysis(message: str) -> Dict[str, Any]:
-    """
-    Análisis basado en patrones — cubre ~70-80% de los casos sin LLM.
-    Retorna dict con 'confidence' que indica si se puede usar sin LLM.
-
-    Usa regex precompiladas y sets O(1) definidos a nivel de módulo.
-    """
+    """Pattern-based intent analysis. Covers ~70-80% of cases without LLM."""
     msg = message.lower().strip()
     base = _make_base(message)
 
-    # ── 1. SALUDOS Y CHAT RÁPIDO (O(1) lookup) ──
+    # Greetings and quick chat
     if msg in _GREETINGS:
         base.update(intent="chat", suggested_worker="chat", confidence=0.95, summary="Saludo")
         return base
@@ -338,18 +296,17 @@ def _fast_intent_analysis(message: str) -> Dict[str, Any]:
         base.update(intent="chat", suggested_worker="chat", confidence=0.95, summary="Despedida")
         return base
 
-    # Presentación
     name_match = _RE_NAME.match(msg)
     if name_match:
         base.update(intent="chat", suggested_worker="chat", confidence=0.95,
                     summary=f"Presentación: {name_match.group(1)}")
         return base
 
-    # ── 2. EXTRAER ENTIDADES (una sola vez) ──
+    # Extract entities once
     entities = _extract_entities(msg)
     base["entities"] = entities
 
-    # ── 3. EMERGENCY STOP (máxima prioridad) ──
+    # Emergency stop (highest priority)
     if _RE_EMERGENCY.search(msg):
         base.update(
             intent="command", action="robot_emergency_stop",
@@ -358,7 +315,7 @@ def _fast_intent_analysis(message: str) -> Dict[str, Any]:
         )
         return base
 
-    # ── 4. ROBOT xARM ──
+    # Robot commands
     for pattern, action in _ROBOT_PATTERNS:
         match = pattern.search(msg)
         if match:
@@ -375,7 +332,7 @@ def _fast_intent_analysis(message: str) -> Dict[str, Any]:
             )
             return base
 
-    # ── 5. PLC HEALTH CHECK ──
+    # PLC health check
     if _RE_PLC_PING.search(msg):
         base.update(intent="query", action="ping_plc",
                     suggested_worker="troubleshooting", confidence=0.95,
@@ -383,7 +340,7 @@ def _fast_intent_analysis(message: str) -> Dict[str, Any]:
         _flag_clarification(base, "No se especificó la estación")
         return base
 
-    # ── 6. LAB COMMANDS ──
+    # Lab commands
     for pattern, action in _LAB_COMMANDS:
         if pattern.search(msg):
             base.update(
@@ -393,7 +350,7 @@ def _fast_intent_analysis(message: str) -> Dict[str, Any]:
             )
             return base
 
-    # ── 7. STATUS QUERIES ──
+    # Status queries
     if _RE_CHECK_ERRORS.search(msg):
         base.update(intent="query", action="check_errors",
                     suggested_worker="troubleshooting", confidence=0.88)
@@ -415,7 +372,7 @@ def _fast_intent_analysis(message: str) -> Dict[str, Any]:
                     suggested_worker="troubleshooting", confidence=0.85)
         return base
 
-    # ── 8. TROUBLESHOOT ──
+    # Troubleshoot
     if _RE_PROBLEMS.search(msg):
         base.update(
             intent="troubleshoot", suggested_worker="troubleshooting",
@@ -424,7 +381,7 @@ def _fast_intent_analysis(message: str) -> Dict[str, Any]:
         _flag_clarification(base, "No se especificó la estación")
         return base
 
-    # ── 9. LEARN / TUTOR ──
+    # Learn / tutor
     if _RE_LEARN.search(msg):
         base.update(intent="learn", suggested_worker="tutor", confidence=0.82)
         if _RE_NEEDS_RESEARCH.search(msg):
@@ -432,20 +389,18 @@ def _fast_intent_analysis(message: str) -> Dict[str, Any]:
             base["confidence"] = 0.85
         return base
 
-    # ── 10. RESEARCH ──
+    # Research
     if _RE_RESEARCH.search(msg):
         base.update(intent="query", action="search_docs",
                     suggested_worker="research", confidence=0.85)
         return base
 
-    # ── 11. FALLBACK: enriquecer urgencia/sentimiento ──
+    # Fallback
     _enrich_urgency_sentiment(base, msg)
     return base
 
 
-# ============================================
-# PLAN MAPPING TABLE (replaces if/elif chain)
-# ============================================
+# Plan mapping table
 
 _LAB_KEYWORDS = [
     "laboratorio", "estacion", "estación", "plc", "cobot", "puerta",
@@ -475,7 +430,7 @@ _ROBOT_ACTION_KEYWORDS = {
 
 
 def _is_robot_action(fast_result: Dict[str, Any], message: str) -> bool:
-    """Determina si la acción es de robot basándose en el análisis rápido."""
+    """Check if the action targets a robot based on fast analysis."""
     suggested = fast_result.get("suggested_worker", "")
     action = (fast_result.get("action") or "").lower()
     intent = fast_result.get("intent", "")
@@ -496,7 +451,7 @@ def _is_robot_action(fast_result: Dict[str, Any], message: str) -> bool:
 
 
 def _has_application_intent(msg_lower: str) -> bool:
-    """Detecta si el usuario pide aplicar/conectar conocimiento con algo práctico."""
+    """Detect if user wants to apply/connect knowledge practically."""
     return bool(re.search(
         r"(?:aplic|implement|usar|uso|utiliz|integr|conect|relacion|combin|merg|mezcl|junt)\w*"
         r"|(?:de\s+qu[eé]\s+manera|c[oó]mo\s+(?:lo|se)\s+(?:aplic|us|implement))",
@@ -505,7 +460,7 @@ def _has_application_intent(msg_lower: str) -> bool:
 
 
 def _mentions_lab_entity(msg_lower: str) -> bool:
-    """Detecta si el mensaje menciona entidades del lab (estaciones, equipos)."""
+    """Detect if message mentions lab entities (stations, equipment)."""
     return bool(re.search(
         r"estaci[oó]n\s*\d|est\.\s*\d|laboratorio|lab\b|plc|cobot|puerta|sensor|conveyor|banda",
         msg_lower,
@@ -513,10 +468,7 @@ def _mentions_lab_entity(msg_lower: str) -> bool:
 
 
 def _map_intent_to_plan(fast_result: Dict[str, Any], message: str) -> Tuple[List[str], str]:
-    """
-    Tabla declarativa: mapea intent_analysis → plan de ejecución.
-    Retorna (plan, reasoning).
-    """
+    """Map intent analysis to execution plan. Returns (plan, reasoning)."""
     intent = fast_result.get("intent", "chat")
     action = fast_result.get("action")
     msg_lower = message[:300].lower()
@@ -561,12 +513,8 @@ def _map_intent_to_plan(fast_result: Dict[str, Any], message: str) -> Tuple[List
     return ["chat"], "General conversation"
 
 
-# ============================================
-# LLM PLAN (smart-path, 1 call)
-# ============================================
-
 def _get_conversation_context(state: AgentState, max_messages: int = 4) -> str:
-    """Construye contexto de conversación reciente para el prompt del planner."""
+    """Build recent conversation context for the planner prompt."""
     messages = state.get("messages", [])
     if not messages:
         return "No prior conversation."
@@ -585,10 +533,7 @@ def _get_conversation_context(state: AgentState, max_messages: int = 4) -> str:
 
 
 def _llm_plan(user_message: str, state: AgentState) -> Dict[str, Any]:
-    """
-    Smart-path: 1 LLM call con chain-of-thought reasoning.
-    Produce intent analysis + plan + reasoning en una sola invocación.
-    """
+    """Smart-path: 1 LLM call with chain-of-thought to produce intent + plan."""
     from src.agent.utils.llm_factory import get_llm
 
     llm = get_llm(state, temperature=0.3, max_tokens=500)
@@ -692,9 +637,7 @@ def _build_fallback_plan(text: str) -> Dict[str, Any]:
     }
 
 
-# ============================================
-# DISPLAY HELPERS
-# ============================================
+# Display helpers
 
 _WORKER_DISPLAY = {
     "chat": "responder",
@@ -756,9 +699,7 @@ def _create_rich_announcement(
     reasoning: str,
     user_message: str,
 ) -> str:
-    """
-    Genera anuncio con razonamiento visible (0 LLM calls).
-    """
+    """Generate user-facing announcement for the plan (no LLM calls)."""
     if plan == ["chat"] or plan == ["robot_operator"]:
         return ""
     if plan == ["summarizer"]:
@@ -769,7 +710,6 @@ def _create_rich_announcement(
     entity = _entity_label(entities)
     plan_key = tuple(plan)
 
-    # Single-worker plans
     if plan_key == ("research",):
         return f"Voy a buscar en los documentos sobre {topic}..." if topic else "Voy a buscar en los documentos..."
 
@@ -795,7 +735,6 @@ def _create_rich_announcement(
     if plan_key == ("tutor",):
         return f"Voy a prepararte una explicación sobre {topic}..." if topic else "Voy a prepararte una explicación."
 
-    # Multi-worker plans
     if plan_key == ("research", "troubleshooting"):
         if entity and topic:
             return (
@@ -823,29 +762,18 @@ def _create_rich_announcement(
             return f"Voy a obtener datos de {entity} del laboratorio y prepararte una explicación."
         return "Voy a consultar el laboratorio y prepararte una explicación."
 
-    # Fallback: generic multi-step
     steps = [_WORKER_DISPLAY.get(w, w) for w in plan if w != "chat"]
     if steps:
         return f"Voy a {', luego '.join(steps)}."
     return ""
 
 
-# ============================================
-# MAIN NODE
-# ============================================
-
 def planner_node(state: AgentState) -> Dict[str, Any]:
-    """
-    ReAct Planner: nodo que fusiona intent_analyzer + orchestrator_plan.
-
-    Fast-path (~70%): regex → plan directo, 0 LLM calls, <1ms
-    Smart-path (~30%): 1 LLM call con chain-of-thought reasoning
-    """
+    """ReAct Planner: fast-path (regex) or smart-path (1 LLM call)."""
     start_time = datetime.utcnow()
     logger.node_start("planner", {"action": "planning"})
     events = [event_plan("planner", "Planning execution...")]
 
-    # ── Get last user message ──
     user_message = ""
     for msg in reversed(state.get("messages", [])):
         if isinstance(msg, HumanMessage):
@@ -876,22 +804,16 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
             "events": events,
         }
 
-    # ══════════════════════════════════════════
-    # MODE DETECTION
-    # ══════════════════════════════════════════
     interaction_mode = state.get("interaction_mode", "chat").lower()
     _is_analysis_mode = interaction_mode == "analysis"
 
-    # ══════════════════════════════════════════
-    # PRACTICE MODE: bypass everything, direct to tutor
-    # ══════════════════════════════════════════
-    
+    # Practice mode: bypass planning, direct to tutor
     if interaction_mode == "practice":
         return {
             "orchestration_plan": ["tutor"],
             "current_step": 0,
             "intent_analysis": {"primary_intent": "practice", "confidence": 1.0, "requires_workers": ["tutor"]},
-            "plan_reasoning": "Practice mode -- direct to tutor (conversational practice)",
+            "plan_reasoning": "Practice mode: direct to tutor",
             "planner_method": "fast_path_practice",
             "pending_context": {},
             "worker_outputs": RESET_WORKER_OUTPUTS,
@@ -903,19 +825,16 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
             "events": events,
         }
 
-    # ══════════════════════════════════════════
-    # FAST PATH: regex → plan directo
-    # ══════════════════════════════════════════
+    # Fast path
     fast_result = _fast_intent_analysis(user_message)
 
-    # Mode override: code/voice con intent chat → mantener en chat con confianza alta
+    # In code/voice mode, boost chat confidence to avoid unnecessary LLM calls
     if interaction_mode in ("code", "voice") and fast_result["intent"] == "chat":
         fast_result["confidence"] = max(fast_result["confidence"], 0.90)
 
     if fast_result["confidence"] >= FAST_CONFIDENCE_THRESHOLD:
         plan, reasoning = _map_intent_to_plan(fast_result, user_message)
 
-        # ANALYSIS MODE: append analysis as final enrichment/formatting step
         if _is_analysis_mode and "analysis" not in plan:
             plan.append("analysis")
             reasoning += " + SQL analysis enrichment"
@@ -960,12 +879,10 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
             "events": events,
         }
 
-    # ══════════════════════════════════════════
-    # SMART PATH: 1 LLM call con chain-of-thought
-    # ══════════════════════════════════════════
+    # Smart path
     logger.info("planner",
                 f"Confidence {fast_result['confidence']:.2f} < {FAST_CONFIDENCE_THRESHOLD}, using LLM planning...")
-    events.append(event_plan("planner", "Complex query — reasoning with LLM..."))
+    events.append(event_plan("planner", "Complex query, reasoning with LLM..."))
 
     llm_result = _llm_plan(user_message, state)
     elapsed_s = (datetime.utcnow() - start_time).total_seconds()
@@ -973,7 +890,6 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
     plan = llm_result["plan"]
     reasoning = llm_result["reasoning"]
 
-    # ANALYSIS MODE: append analysis as final enrichment/formatting step
     if _is_analysis_mode and "analysis" not in plan:
         plan.append("analysis")
         reasoning += " + SQL analysis enrichment"
@@ -1011,9 +927,7 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
     }
 
 
-# ============================================
-# BACKWARD-COMPAT HELPERS
-# ============================================
+# Backward-compat helpers
 
 def get_intent_analysis(state: AgentState) -> Dict[str, Any]:
     return state.get("intent_analysis", {})

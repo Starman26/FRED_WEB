@@ -1,9 +1,6 @@
 """
-bootstrap.py 
----------------------------------------------------------
-- Inicializamos el estado y verificamos las herramientas
----------------------------------------------------------
-
+bootstrap.py
+State initialization and service verification.
 """
 import json
 import os
@@ -16,7 +13,7 @@ from src.agent.utils.logger import logger
 
 
 def _as_event_list(evt) -> List[Dict[str, Any]]:
-    """Helper para normalizar eventos a lista"""
+    """Normalize events to a list."""
     if evt is None:
         return []
     if isinstance(evt, list):
@@ -51,34 +48,21 @@ def _recall_similar_diagnostics(user_message: str, team_id: str = None, limit: i
 
 
 def bootstrap_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Bootstrap node: inicializa campos faltantes y verifica herramientas.
-    
-    Este nodo se ejecuta PRIMERO en el grafo y asegura que:
-    1. Todos los campos del state tengan valores válidos
-    2. Supabase y embeddings estén disponibles (via services)
-    3. Los campos de orchestration estén listos
-    
-    NOTA: supabase y embeddings NO se guardan en el state porque no son
-    serializables. Se acceden via src.agent.services.
-    
-    Returns:
-        Dict con patches al state
+    """First node in the graph. Initializes missing state fields and verifies services.
+
+    Supabase/embeddings are not stored in state (not serializable);
+    access them via src.agent.services.
     """
     logger.node_start("bootstrap", {"action": "initializing_state"})
     
     patches: Dict[str, Any] = {}
     events: List[Dict[str, Any]] = []
 
-    # ==========================================
-    # FAST-PATH: practice mode on subsequent turns
-    # Skip expensive Supabase fetches; only refresh robot_state
-    # ==========================================
+    # Fast-path: practice mode on subsequent turns (skip Supabase fetches)
     interaction_mode = state.get("interaction_mode", "chat")
 
     if interaction_mode == "practice" and state["automation_id"]:
-        # Use in-memory bridge connections instead of Supabase robot_state table.
-        # The real robot state is only known by the connected bridge (WebSocket).
+        # Real robot state comes from the connected bridge (WebSocket), not Supabase
         from src.agent.shared_state import get_connected_robots
         connected = get_connected_robots()
 
@@ -91,20 +75,14 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
         }
 
 
-    # ==========================================
-    # 2. Inicializar campos faltantes con DEFAULTS
-    # ==========================================
+    # Initialize missing fields with defaults
     for key, default_value in STATE_DEFAULTS.items():
         current_value = state.get(key)
-        
-        # Inicializar si falta o es None
         if current_value is None:
             patches[key] = default_value
             logger.debug("bootstrap", f"Inicializando {key} con valor por defecto")
-    
-    # ==========================================
-    # 3. INICIALIZAR SERVICIOS (no se guardan en state)
-    # ==========================================
+
+    # Initialize services (not stored in state)
     services_status = init_services()
     
     if services_status["supabase_connected"]:
@@ -116,10 +94,8 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
         events.append(event_read("bootstrap", " Embeddings listos"))
     else:
         events.append(event_error("bootstrap", " Embeddings no disponibles"))
-    
-    # ==========================================
-    # 4. Inicializar orchestration si no existe
-    # ==========================================
+
+    # Initialize orchestration fields
     if state.get("orchestration_plan") is None:
         patches["orchestration_plan"] = []
     
@@ -131,15 +107,12 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
     
     if state.get("pending_context") is None:
         patches["pending_context"] = {}
-    
-    # ==========================================
-    # 5. Cargar datos de Supabase (automation, robot_state, user_profile)
-    # ==========================================
+
+    # Load data from Supabase
     if services_status["supabase_connected"]:
         from src.agent.services import get_supabase
         sb = get_supabase()
 
-        # --- Cargar automation ---
         if state.get("automation_id"):
             try:
                 result = sb.schema("lab").from_("automations") \
@@ -171,7 +144,6 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
             except Exception as e:
                 logger.warning("bootstrap", f"Failed to load automation: {e}")
 
-        # --- Cargar robot state desde lab.robot_state ---
         try:
             robot_result = sb.schema("lab").from_("robot_state") \
                 .select("id, state, mode, error_code, warning_code, tcp_x, tcp_y, tcp_z, tcp_roll, tcp_pitch, tcp_yaw, joints, velocities, efforts, temperatures, currents, is_connected, space_id") \
@@ -207,7 +179,6 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
             logger.warning("bootstrap", f"Failed to load robot state: {e}")
             patches["robot_state"] = {}
 
-        # --- Cargar user agent profile (siempre) ---
         if state.get("auth_user_id"):
             try:
                 profile_result = sb.from_("user_agent_profiles") \
@@ -228,9 +199,43 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
             except Exception as e:
                 logger.warning("bootstrap", f"Failed to load user profile: {e}")
 
-    # ==========================================
-    # 6. Recall similar diagnostics (cross-session memory)
-    # ==========================================
+        # Load equipment spec + agent skills (Skills System)
+        equipment_id = (state.get("pending_context") or {}).get("equipment_id")
+        if equipment_id:
+            try:
+                eq_result = sb.schema("lab").from_("equipment_profiles") \
+                    .select("type, spec_md") \
+                    .eq("id", equipment_id) \
+                    .single() \
+                    .execute()
+
+                if eq_result.data:
+                    equipment_type = eq_result.data.get("type", "generic")
+                    spec_md = eq_result.data.get("spec_md") or ""
+                    patches["equipment_spec"] = spec_md
+
+                    # Load skills matching this equipment type + generic
+                    skills_result = sb.schema("lab").from_("agent_skills") \
+                        .select("slug, title, category, content_md") \
+                        .in_("equipment_type", [equipment_type, "generic"]) \
+                        .execute()
+
+                    skills = skills_result.data or []
+                    patches["loaded_skills"] = [s["content_md"] for s in skills]
+                    patches["loaded_skills_meta"] = [
+                        {"slug": s["slug"], "title": s["title"], "category": s["category"]}
+                        for s in skills
+                    ]
+
+                    logger.info("bootstrap",
+                                f"Equipment context loaded: spec_md={len(spec_md)} chars, "
+                                f"skills={[s['slug'] for s in skills]}")
+                    events.append(event_read("bootstrap",
+                                             f"Loaded equipment context: {len(skills)} skills"))
+            except Exception as e:
+                logger.warning("bootstrap", f"Failed to load equipment context: {e}")
+
+    # Recall similar diagnostics (cross-session memory)
     if interaction_mode in ("chat", "agent", "code"):
         user_msg = ""
         for m in reversed(state.get("messages", [])):
@@ -259,9 +264,7 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
                 patches["pending_context"] = pending
                 events.append(event_read("bootstrap", f"Recalled {len(similar)} similar diagnostics"))
 
-    # ==========================================
-    # 7. Populate active_devices from bridge connections
-    # ==========================================
+    # Populate active_devices from bridge connections
     try:
         from src.agent.shared_state import get_connected_robots
         active = get_connected_robots()
@@ -269,13 +272,9 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
         active = {}
     patches["active_devices"] = active
 
-    # ==========================================
-    # 8. Registrar evento de inicio
-    # ==========================================
     events.append(event_read("bootstrap", " Estado inicializado correctamente"))
 
-    # operator.add en el reducer se encarga de concatenar con events previos.
-    # Solo retornamos los events NUEVOS de este turn.
+    # Only return new events; operator.add in the reducer handles concatenation
     patches["events"] = events
     
     logger.node_end("bootstrap", {
@@ -289,10 +288,7 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
 
 
 def get_bootstrap_status(state: AgentState) -> Dict[str, Any]:
-    """
-    Helper para verificar el estado del bootstrap.
-    Útil para debugging.
-    """
+    """Return bootstrap status summary for debugging."""
     services = get_services_status()
     
     return {

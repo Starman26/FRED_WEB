@@ -1,7 +1,7 @@
 """
-plc_tools.py — Agent tools for Siemens S7-1200/1500 PLCs.
+Agent tools for Siemens S7-1200/1500 PLCs.
 
-Communicates via edge_router → lab bridge → snap7 (S7comm protocol).
+Communicates via edge_router > lab bridge > snap7 (S7comm protocol).
 Supports reading/writing Inputs (I), Outputs (Q), and Memory (M) areas.
 """
 
@@ -12,10 +12,6 @@ from langchain_core.tools import tool
 from .edge_router import send_command, register_mock_handler
 
 
-# ═══════════════════════════════════════════════════════════════
-# Mock state
-# ═══════════════════════════════════════════════════════════════
-
 _mock_plcs: Dict[str, Dict[str, Any]] = {
     "192.168.1.101": {"connected": True, "name": "PLC Station 1"},
     "192.168.1.102": {"connected": True, "name": "PLC Station 2"},
@@ -24,12 +20,11 @@ _mock_plcs: Dict[str, Dict[str, Any]] = {
     "192.168.1.105": {"connected": True, "name": "PLC Station 5"},
 }
 
-# Mock memory: {plc_ip: {area: {byte_addr: int_value}}}
 _mock_memory: Dict[str, Dict[str, Dict[int, int]]] = {}
 
 
 def _get_mock_byte(plc_ip: str, area: str, byte_addr: int) -> int:
-    """Get a mock byte value, generating random on first access."""
+    """Get a mock byte value, randomizing on first access."""
     if plc_ip not in _mock_memory:
         _mock_memory[plc_ip] = {}
     if area not in _mock_memory[plc_ip]:
@@ -48,10 +43,6 @@ def _set_bit(value: int, bit: int, on: bool) -> int:
         return value | (1 << bit)
     return value & ~(1 << bit)
 
-
-# ═══════════════════════════════════════════════════════════════
-# Mock handlers
-# ═══════════════════════════════════════════════════════════════
 
 def _mock_read_area(params: dict, device_id: str) -> dict:
     plc_ip = params.get("plc_ip", device_id)
@@ -114,7 +105,6 @@ def _mock_list_connections(params: dict, device_id: str) -> dict:
     }
 
 
-# Register mocks
 for action, handler in {
     "read_area": _mock_read_area,
     "write_bit": _mock_write_bit,
@@ -122,10 +112,6 @@ for action, handler in {
 }.items():
     register_mock_handler("plc", action, handler)
 
-
-# ═══════════════════════════════════════════════════════════════
-# Agent tools
-# ═══════════════════════════════════════════════════════════════
 
 def _send(action: str, params: dict = None, device_id: str = "") -> str:
     result = send_command("plc", action, params or {}, device_id)
@@ -234,10 +220,6 @@ def plc_list_connections(device_id: str = "") -> str:
     """
     return _send("list_connections", device_id=device_id)
 
-
-# ═══════════════════════════════════════════════════════════════
-# Exports
-# ═══════════════════════════════════════════════════════════════
 
 PLC_READ_TOOLS = [plc_read_input, plc_read_output, plc_read_memory, plc_list_connections]
 PLC_WRITE_TOOLS = [plc_write_output, plc_write_memory]

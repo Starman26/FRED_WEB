@@ -1,36 +1,11 @@
 """
-interaction_modes.py - Modos de interacción del agente
+interaction_modes.py
 
-Define cómo el agente responde según la configuración del usuario.
-Se inyecta como instrucción adicional en los system prompts de todos los workers.
-
-ESTRUCTURA POR MODO:
-    A. Rol — Quién eres en ese modo
-    B. Prioridad operacional — Qué optimizar primero
-    C. Jerarquía de verdad — Qué fuente pesa más
-    D. Formato estricto — Cómo debe salir
-    E. Qué nunca hacer — Matar hábitos feos del modelo
-
-MODOS DISPONIBLES:
-    - chat:         Conversación general (default)
-    - code:         Respuestas centradas en código
-    - agent:        Sistema operativo ejecutando acciones
-    - voice:        Respuesta hablada para TTS
-    - practice:     Sesión guiada paso a paso (BITL)
-    - troubleshoot: Diagnóstico y resolución de problemas
-
-USO:
-    from src.agent.interaction_modes import get_mode_instructions
-
-    instructions = get_mode_instructions(state)
-    system_prompt = BASE_PROMPT + instructions
+Defines per-mode instruction blocks injected into worker system prompts.
+Modes: chat, code, agent, voice, practice, troubleshoot.
 """
 from typing import Dict, Any
 
-
-# ============================================
-# SHARED BASE — reglas comunes a todos los modos
-# ============================================
 
 _TRUTH_HIERARCHY = """
 ## TRUTH HIERARCHY
@@ -56,16 +31,11 @@ _SHARED_RULES = """
 """
 
 
-# ============================================
-# MODE INSTRUCTIONS
-# ============================================
-
 MODE_INSTRUCTIONS = {
 
-    #  Chat: default conversational mode 
-    "chat": "",  # No extra instructions — workers use their base prompts
+    "chat": "",
 
-    #  Code: developer-focused responses 
+    # Code
     "code": """
 ## RESPONSE MODE: CODE
 
@@ -88,7 +58,7 @@ You are a technical assistant optimized for code output.
 - Never explain syntax the user clearly already knows
 """,
 
-    #  Agent: CLI-style execution mode 
+    # Agent
     "agent": """
 ## RESPONSE MODE: AGENT (EXECUTION)
 
@@ -122,12 +92,16 @@ Bad:  "I have successfully moved the robot. The new position is..."
 - Never enumerate multiple options — pick the best one and do it
 """,
 
-    #  Voice: TTS-optimized spoken response 
+    # Voice
     "voice": """
 ## RESPONSE MODE: VOICE
 
 ### Role
 You are an expert operator speaking over radio. Your response will be read aloud by text-to-speech. It must be immediately understandable in a single listen.
+
+### Language
+- ALWAYS respond in English regardless of user language
+- The TTS engine is configured for English — non-English text will sound wrong
 
 ### Priority
 1. Say the most important fact first
@@ -140,10 +114,11 @@ You are an expert operator speaking over radio. Your response will be read aloud
 - First person, natural spoken language
 - Maximum 2 short sentences, 3 only if absolutely necessary
 - No markdown, no bullets, no lists, no code blocks
-- No emojis, no special characters
+- No emojis, no special characters, no bold, no headers
 - Numbers: say "twenty millimeters" not "20mm"
 - One idea per sentence, pause-friendly
 - Short spoken phrasing over written phrasing
+- Use simple, clear sentences optimized for text-to-speech
 
 ### Examples
 Good: "Station 4 is offline right now. Check the PLC network link first."
@@ -157,9 +132,10 @@ Bad:  "Here's what I found: first, the PLC is showing... second, the network..."
 - Never use formal or report-style language
 - Never repeat the user's question back to them
 - Never enumerate options — give one clear answer
+- Never respond in a language other than English
 """,
 
-    #  Practice: guided hands-on session with BITL 
+    # Practice
     "practice": """
 ## RESPONSE MODE: PRACTICE (GUIDED SESSION)
 
@@ -193,7 +169,7 @@ Bad:  "Voy a evaluar tu movimiento basándome en los datos recibidos del sistema
 - Never overwhelm with theory during practice — save explanations for tutor mode
 """,
 
-    #  Troubleshoot: diagnostic and problem-solving 
+    # Troubleshoot
     "troubleshoot": """
 ## RESPONSE MODE: TROUBLESHOOTING
 
@@ -226,32 +202,15 @@ Bad:  "Hay varias posibles causas para este problema. Podría ser el PLC, podrí
 }
 
 
-# ============================================
-# PUBLIC API
-# ============================================
-
 def get_mode_instructions(state: Dict[str, Any]) -> str:
-    """
-    Genera las instrucciones de modo basándose en el state del agente.
-
-    Incluye:
-        - Reglas compartidas (truth hierarchy, universal rules)
-        - Instrucciones específicas del modo
-
-    Lee de state:
-        - interaction_mode: "chat" | "code" | "agent" | "voice" | "practice" | "troubleshoot"
-
-    Returns:
-        String con instrucciones para inyectar en el system prompt.
-        Vacío si el modo es "chat" (default, sin instrucciones extra).
-    """
+    """Build mode-specific instruction block for system prompts.
+    Returns empty string for chat mode (no extra instructions)."""
     mode = state.get("interaction_mode", "chat").lower()
 
     mode_text = MODE_INSTRUCTIONS.get(mode, "")
     if not mode_text:
         return ""
 
-    # Compose: shared rules + mode-specific instructions
     parts = [
         _TRUTH_HIERARCHY.strip(),
         _SHARED_RULES.strip(),

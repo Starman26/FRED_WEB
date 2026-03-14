@@ -1,13 +1,5 @@
-"""
-troubleshooter_node.py - Worker especializado en diagnóstico y troubleshooting
-
-CAPACIDADES:
-1. Diagnóstico técnico general (PLCs, Cobots, etc.)
-2. Integración con laboratorio ATLAS (consulta estado real de equipos)
-3. Preguntas estructuradas con opciones del lab real
-4. Ejecución de acciones (cambiar modo cobot, etc.)
-5. Conocimiento base del laboratorio (robots, estaciones, terminología)
-"""
+"""Troubleshooting worker: diagnóstico técnico, integración con lab ATLAS,
+preguntas estructuradas, ejecución de acciones y conocimiento base del laboratorio."""
 import os
 import re
 import json
@@ -29,6 +21,7 @@ from src.agent.tools.hardware_tools import (
 )
 
 from src.agent.state import AgentState
+from src.agent.helpers.skill_injector import build_equipment_context_block
 from src.agent.contracts.worker_contract import WorkerOutputBuilder, create_error_output
 from src.agent.contracts.question_schema_v2 import (
     QuestionBuilder,
@@ -40,12 +33,7 @@ from src.agent.prompts.format_rules import MARKDOWN_FORMAT_RULES
 from src.agent.interaction_modes import get_truth_hierarchy, get_mode_instructions
 
 def extract_suggestions_from_text(text: str) -> tuple[str, list[str]]:
-    """
-    Extrae las sugerencias del texto de respuesta del LLM.
-    
-    Returns:
-        (content_without_suggestions, list_of_suggestions)
-    """
+    """Extract suggestions block from LLM response text."""
     suggestions = []
     content = text
     
@@ -65,7 +53,6 @@ def extract_suggestions_from_text(text: str) -> tuple[str, list[str]]:
     return content, suggestions[:3]
 
 
-# Importar conocimiento del laboratorio
 try:
     from src.agent.knowledge import (
         get_lab_knowledge_summary,
@@ -81,41 +68,30 @@ except ImportError:
 
 
 def get_knowledge_context(user_message: str) -> str:
-    """
-    Obtiene contexto de conocimiento relevante basado en el mensaje del usuario.
-    Busca términos, robots, estaciones mencionadas.
-    """
+    """Build knowledge context by matching robots, stations, and error codes in the message."""
     if not LAB_KNOWLEDGE_AVAILABLE:
         return ""
     
     context_parts = []
     msg_lower = user_message.lower()
-    
-    # Buscar robots mencionados
+
     for robot_name in ROBOTS.keys():
         if robot_name.lower() in msg_lower:
             context_parts.append(get_robot_info(robot_name))
-    
-    # Buscar estaciones mencionadas
+
     for i in range(1, 7):
         if f"estacion {i}" in msg_lower or f"estación {i}" in msg_lower or f"est {i}" in msg_lower:
             context_parts.append(get_station_info(i))
-    
-    # Buscar códigos de error
+
     for error_code in COMMON_ERRORS.keys():
         if error_code.lower() in msg_lower:
             context_parts.append(get_error_solution(error_code))
-    
-    # Si no encontró nada específico, dar resumen general
+
     if not context_parts:
         context_parts.append(get_lab_knowledge_summary())
     
     return "\n\n".join(context_parts)
 
-
-# ============================================
-# GENERACIÓN DINÁMICA DE PREGUNTAS CON LLM
-# ============================================
 
 QUESTION_GENERATION_PROMPT = '''Eres un asistente técnico experto en sistemas industriales.
 
@@ -173,18 +149,7 @@ def generate_dynamic_questions(
     lab_context: str = "",
     llm = None
 ) -> Optional[QuestionSet]:
-    """
-    Usa el LLM para generar preguntas de clarificación dinámicas
-    basadas en el contexto específico del usuario.
-    
-    Args:
-        user_message: Mensaje original del usuario
-        lab_context: Contexto actual del laboratorio (opcional)
-        llm: Instancia del LLM a usar
-        
-    Returns:
-        QuestionSet con preguntas generadas o None si falla
-    """
+    """Use the LLM to generate context-specific clarification questions."""
     if not llm:
         from src.agent.utils.llm_factory import get_llm_from_name
         import os
@@ -203,9 +168,7 @@ def generate_dynamic_questions(
         
         response = llm.invoke([HumanMessage(content=prompt)])
         content = response.content.strip()
-        
-        # Extraer JSON del response
-        # Buscar el primer { y el último }
+
         start_idx = content.find('{')
         end_idx = content.rfind('}') + 1
         
@@ -215,8 +178,7 @@ def generate_dynamic_questions(
         
         json_str = content[start_idx:end_idx]
         data = json.loads(json_str)
-        
-        # Convertir a QuestionSet via QuestionBuilder
+
         builder = QuestionBuilder("troubleshooting")
         builder.context(data.get("context", "Necesito más información:"))
 
@@ -254,15 +216,10 @@ def generate_dynamic_questions(
         logger.error("troubleshooter_node", f"Error generando preguntas dinámicas: {e}")
         return None
 
-# Lab tools removed — all lab queries now handled by autonomous diagnosis
 LAB_TOOLS_AVAILABLE = False
 
 MAX_DIAGNOSTIC_ITERATIONS = 8
 
-
-# ============================================
-# SHARED DIAGNOSTIC BASE
-# ============================================
 
 _DIAGNOSTIC_BASE_RULES = f"""
 {get_truth_hierarchy()}
@@ -277,10 +234,6 @@ _DIAGNOSTIC_BASE_RULES = f"""
 - Prefer real observed state over interpretation
 """
 
-
-# ============================================
-# PROMPTS
-# ============================================
 
 TROUBLESHOOTER_PROMPT_SIMPLE = """You are a senior diagnostic engineer specializing in industrial automation.
 
@@ -496,38 +449,26 @@ User: {{user_name}}
 """.format(base_rules=_DIAGNOSTIC_BASE_RULES)
 
 
-# ============================================
-# DETECCIÓN DE CONTEXTO
-# ============================================
-
 def is_lab_related(message: str) -> bool:
-    """Detecta si el mensaje está relacionado con el laboratorio ATLAS"""
+    """Check if the message references ATLAS lab equipment or terminology."""
     msg = message.lower()
-    
+
     lab_keywords = [
-        # Equipos del lab
         "estación", "estacion", "station",
         "laboratorio", "lab", "atlas",
-        # Referencias específicas
         "plc-st", "cobot-st", "door-sensor",
         "estación 1", "estación 2", "estación 3", "estación 4", "estación 5", "estación 6",
         "est1", "est2", "est3", "est4", "est5", "est6",
-        # Protocolos del lab
         "puerta", "door", "interlock",
         "rutina", "routine",
-        # Acciones del lab
         "start cobot", "stop cobot", "lab status",
         "checar", "verificar estado",
-        # Robots específicos
         "alfredo", "ur5", "ur10", "universal robots",
-        # Estaciones por nombre
         "ensamblaje", "soldadura", "inspección", "inspeccion", "testing", "empaque",
-        # Terminología técnica del lab
         "profinet", "tia portal", "polyscope", "teach pendant",
         "oee", "tiempo de ciclo", "celda",
     ]
-    
-    # Agregar nombres de robots del conocimiento si está disponible
+
     if LAB_KNOWLEDGE_AVAILABLE:
         try:
             for robot_name in ROBOTS.keys():
@@ -540,7 +481,7 @@ def is_lab_related(message: str) -> bool:
 
 
 def detect_station_number(message: str) -> Optional[int]:
-    """Extrae número de estación del mensaje si se menciona"""
+    """Extract station number from message, if mentioned."""
     msg = message.lower()
     
     patterns = [
@@ -560,7 +501,7 @@ def detect_station_number(message: str) -> Optional[int]:
 
 
 def detect_equipment_type(message: str) -> Optional[str]:
-    """Detecta qué tipo de equipo se menciona"""
+    """Detect equipment type (plc/cobot/sensor) from message keywords."""
     msg = message.lower()
     
     if any(kw in msg for kw in ["plc", "s7", "siemens", "allen"]):
@@ -574,10 +515,9 @@ def detect_equipment_type(message: str) -> Optional[str]:
 
 
 def detect_action_request(message: str, pending_context: dict = None) -> Optional[Dict]:
-    """Detecta si el usuario quiere ejecutar una acción"""
+    """Detect if the user wants to execute a lab action (start/stop cobot, reset, etc.)."""
     msg = message.lower()
-    
-    # Iniciar cobot / rutina
+
     start_phrases = [
         "start cobot", "start cobot", "execute routine", "start cobot", "run routine",
         "comienza rutina", "comenzar rutina", "inicia rutina", "iniciar rutina",
@@ -586,8 +526,7 @@ def detect_action_request(message: str, pending_context: dict = None) -> Optiona
     ]
     if any(phrase in msg for phrase in start_phrases):
         station = detect_station_number(message)
-        # Detectar rutina
-        mode = 1  # Default: rutina 1
+        mode = 1
         if "rutina 2" in msg or "routine 2" in msg or "modo 2" in msg:
             mode = 2
         elif "rutina 3" in msg or "routine 3" in msg or "modo 3" in msg:
@@ -595,8 +534,7 @@ def detect_action_request(message: str, pending_context: dict = None) -> Optiona
         elif "rutina 4" in msg or "routine 4" in msg or "modo 4" in msg:
             mode = 4
         return {"action": "start_cobot", "station": station, "mode": mode}
-    
-    # Parar cobot
+
     stop_phrases = [
         "stop cobot", "detener cobot", "stop cobot", "parar rutina",
         "para cobot", "para rutina", "detén cobot", "deten cobot",
@@ -608,10 +546,7 @@ def detect_action_request(message: str, pending_context: dict = None) -> Optiona
     if any(phrase in msg for phrase in stop_phrases):
         station = detect_station_number(message)
         return {"action": "stop_cobot", "station": station, "mode": 0}
-    
-    # === ACCIONES DE REPARACIÓN ===
-    
-    # Reset completo del lab
+
     reset_phrases = [
         "reset lab", "resetear lab", "reiniciar lab", "reinicia el lab",
         "reset completo", "reinicio completo", "restaurar lab",
@@ -619,16 +554,14 @@ def detect_action_request(message: str, pending_context: dict = None) -> Optiona
     ]
     if any(phrase in msg for phrase in reset_phrases):
         return {"action": "reset_lab", "needs_confirmation": True}
-    
-    # Cerrar puertas
+
     door_phrases = [
         "cierra las puertas", "cerrar puertas", "close doors",
         "cierra todas las puertas", "asegura las puertas"
     ]
     if any(phrase in msg for phrase in door_phrases):
         return {"action": "close_doors"}
-    
-    # Reconnect PLC
+
     reconnect_phrases = [
         "reconectar plc", "reconecta la plc", "reconnect plc",
         "reiniciar plc", "reinicia la plc"
@@ -636,8 +569,7 @@ def detect_action_request(message: str, pending_context: dict = None) -> Optiona
     if any(phrase in msg for phrase in reconnect_phrases):
         station = detect_station_number(message)
         return {"action": "reconnect_plc", "station": station}
-    
-    # Resolver errores
+
     resolve_phrases = [
         "resolver errores", "resuelve los errores", "limpia los errores",
         "clear errors", "fix errors", "arregla los errores"
@@ -645,8 +577,7 @@ def detect_action_request(message: str, pending_context: dict = None) -> Optiona
     if any(phrase in msg for phrase in resolve_phrases):
         station = detect_station_number(message)
         return {"action": "resolve_errors", "station": station}
-    
-    # Intentar arreglar (genérico - requiere confirmación)
+
     fix_phrases = [
         "intenta arreglarlo", "arreglalo", "arréglalo", "fix it",
         "intenta solucionarlo", "soluciona", "repara", "repáralo",
@@ -663,10 +594,9 @@ def detect_action_request(message: str, pending_context: dict = None) -> Optiona
         station = detect_station_number(message)
         if station or has_repair_context:
             return {"action": "auto_fix", "station": station, "needs_confirmation": False}
-        # Without context, casual phrases like "dale" shouldn't trigger auto_fix
+        # Casual phrases like "dale" shouldn't trigger auto_fix without context
         return None
-    
-    # Ver estado general del lab
+
     status_phrases = [
         "lab status", "resumen del lab", "ver laboratorio", "lab status",
         "estado laboratorio", "status lab", "como está el lab", "como esta el lab",
@@ -679,10 +609,9 @@ def detect_action_request(message: str, pending_context: dict = None) -> Optiona
 
 
 def detect_query_request(message: str) -> Optional[Dict]:
-    """Detecta si el usuario está haciendo una consulta sobre el lab status"""
+    """Detect if the user is querying lab status (errors, PLCs, cobots, doors, etc.)."""
     msg = message.lower()
-    
-    # Consulta sobre errores
+
     error_queries = [
         "errores activos", "hay errores", "que errores", "cuantos errores",
         "estaciones con errores", "problemas activos", "fallas activas",
@@ -691,49 +620,40 @@ def detect_query_request(message: str) -> Optional[Dict]:
     ]
     if any(phrase in msg for phrase in error_queries):
         return {"query": "active_errors"}
-    
-    # Consulta sobre PLCs
+
     plc_queries = [
         "estado de las plc", "plcs conectadas", "plc desconectada",
         "que plc", "cuales plc", "lista de plc", "plcs del lab"
     ]
     if any(phrase in msg for phrase in plc_queries):
         return {"query": "plc_status"}
-    
-    # Consulta sobre Cobots
+
     cobot_queries = [
         "estado de los cobot", "cobots activos", "que cobot",
         "cobots ejecutando", "cobots en rutina", "lista de cobot"
     ]
     if any(phrase in msg for phrase in cobot_queries):
         return {"query": "cobot_status"}
-    
-    # Consulta sobre puertas
+
     door_queries = [
         "puertas abiertas", "puertas cerradas", "estado de las puertas",
         "sensores de puerta", "alguna puerta abierta", "doors"
     ]
     if any(phrase in msg for phrase in door_queries):
         return {"query": "door_status"}
-    
-    # Consulta sobre estación específica
+
     station = detect_station_number(message)
     if station and any(word in msg for word in ["estado", "status", "como está", "como esta", "info", "detalles"]):
         return {"query": "station_details", "station": station}
-    
-    # Consulta general si menciona el lab
+
     if is_lab_related(message) and any(word in msg for word in ["hay", "cuantos", "cuántos", "cuales", "cuáles", "lista", "ver", "mostrar"]):
         return {"query": "lab_overview"}
     
     return None
 
 
-# ============================================
-# HELPERS
-# ============================================
-
 def get_last_user_message(state: AgentState) -> str:
-    """Obtiene el último mensaje del usuario"""
+    """Return the last user message from state."""
     for m in reversed(state.get("messages", []) or []):
         if isinstance(m, HumanMessage):
             return (m.content or "").strip()
@@ -743,7 +663,7 @@ def get_last_user_message(state: AgentState) -> str:
 
 
 def get_evidence_from_context(state: AgentState) -> str:
-    """Extrae evidencia de contexto previo"""
+    """Extract evidence from pending_context or prior research worker output."""
     evidence_data = state.get("pending_context", {}).get("evidence", [])
     if not evidence_data:
         for output in state.get("worker_outputs", []):
@@ -759,7 +679,7 @@ def get_evidence_from_context(state: AgentState) -> str:
 
 
 def extract_severity(content: str) -> str:
-    """Extrae severidad del problema"""
+    """Classify problem severity from content keywords."""
     content_lower = content.lower()
     if any(kw in content_lower for kw in ["crítico", "producción parada", "urgente", "emergency"]):
         return "critical"
@@ -771,12 +691,8 @@ def extract_severity(content: str) -> str:
 
 
 
-# ============================================
-# STREAM CALLBACK HELPER
-# ============================================
-
 def _get_stream_cb(state) -> object:
-    """Resolve the tool lifecycle stream callback from state's _stream_session_id."""
+    """Resolve stream callback from state's session ID."""
     session_id = state.get("_stream_session_id")
     if not session_id:
         return None
@@ -787,22 +703,17 @@ def _get_stream_cb(state) -> object:
         return None
 
 
-# ============================================
-# CONTEXT DATACLASS + BUILDER
-# ============================================
-
 @dataclass
 class TroubleshooterContext:
     """Normalized context extracted from AgentState for all handlers."""
-    state: AgentState  # keep reference for LLM/model access
+    state: AgentState
     user_message: str
     clarification_text: str
     already_clarified: bool
     pending_context: Dict[str, Any]
-    events: list  # mutable, accumulated across handlers
+    events: list
     start_time: datetime
 
-    # Detection results
     is_lab: bool
     station_num: Optional[int]
     equipment: Optional[str]
@@ -810,17 +721,12 @@ class TroubleshooterContext:
     query_request: Optional[Dict]
     is_command: bool
     interaction_mode: str
-
-    # Convenience
     user_name: str
     intent_analysis: Dict[str, Any]
 
 
 def _build_context(state: AgentState) -> Optional[TroubleshooterContext]:
-    """
-    Extract and normalize all context from AgentState.
-    Returns None when there is no user message (caller handles error).
-    """
+    """Extract and normalize all context from AgentState. Returns None if no user message."""
     start_time = datetime.utcnow()
     logger.node_start("troubleshooter_node", {})
     events = [event_execute("troubleshooting", "Analizando problema...")]
@@ -830,7 +736,6 @@ def _build_context(state: AgentState) -> Optional[TroubleshooterContext]:
     original_query = pending_context.get("original_query", "")
     already_clarified = bool(user_clarification or pending_context.get("_hitl_consumed"))
 
-    # - 1. DETERMINAR MENSAJE A USAR -
     if user_clarification and original_query:
         user_message = original_query
         clarification_text = user_clarification
@@ -842,10 +747,8 @@ def _build_context(state: AgentState) -> Optional[TroubleshooterContext]:
         if not user_message:
             return None
 
-    # - 2. USAR INTENT ANALYSIS + DETECTAR CONTEXTO -
     intent_analysis = state.get("intent_analysis", {})
 
-    # Extraer de intent_analysis si está disponible
     if intent_analysis:
         entities = intent_analysis.get("entities", {})
         station_num = entities.get("station") or detect_station_number(user_message)
@@ -856,7 +759,6 @@ def _build_context(state: AgentState) -> Optional[TroubleshooterContext]:
         action_request = None
         query_request = None
 
-        # Si es QUERY, mapear a query_request (NO a action_request)
         if intent_type == "query":
             if detected_action == "check_errors":
                 query_request = {"query": "active_errors"}
@@ -887,9 +789,7 @@ def _build_context(state: AgentState) -> Optional[TroubleshooterContext]:
                 else:
                     query_request = {"query": "health_check", "station": None}  # HITL below
             elif detected_action == "search_docs":
-                # search_docs is a research action, not troubleshooting.
-                # When troubleshooter runs in a multi-step plan after research,
-                # provide station/lab data instead.
+                # search_docs is research, not troubleshooting; provide lab data instead
                 if station_num:
                     query_request = {"query": "station_details", "station": station_num}
                 elif equipment:
@@ -900,10 +800,8 @@ def _build_context(state: AgentState) -> Optional[TroubleshooterContext]:
             elif detected_action in ("get_station_count", "get_lab_overview", "lab_overview"):
                 query_request = {"query": "lab_overview"}
             elif station_num:
-                # Si el LLM devolvió acción desconocida pero hay estación → station_details
                 query_request = {"query": "station_details", "station": station_num}
             else:
-                # keyword-based fallback for unknown LLM-generated actions
                 _action_lower = (detected_action or "").lower()
                 _msg_lower = user_message.lower()
                 _combined = _action_lower + " " + _msg_lower
@@ -917,13 +815,10 @@ def _build_context(state: AgentState) -> Optional[TroubleshooterContext]:
                 elif any(kw in _combined for kw in ["error", "alarm", "falla", "fault"]):
                     query_request = {"query": "active_errors"}
                 else:
-                    # Final fallback
                     query_request = detect_query_request(user_message)
                     if not query_request and is_lab_related(user_message):
                         query_request = {"query": "lab_overview"}
-            # NO crear action_request para queries
 
-        # Si es COMMAND, mapear a action_request
         elif intent_type == "command" and detected_action:
             action_request = {
                 "action": detected_action,
@@ -931,14 +826,11 @@ def _build_context(state: AgentState) -> Optional[TroubleshooterContext]:
                 "mode": entities.get("routine", 1) if detected_action == "start_cobot" else 0
             }
 
-        # Si es TROUBLESHOOT sin acción específica, no crear ninguno (irá a diagnóstico)
-
         is_lab = True if (station_num or equipment or detected_action) else is_lab_related(user_message)
 
         logger.info("troubleshooter_node",
             f"Usando intent_analysis: intent={intent_type} action={detected_action} station={station_num}")
     else:
-        # Fallback: usar detección local
         is_lab = is_lab_related(user_message) or is_lab_related(clarification_text)
         station_num = detect_station_number(user_message) or detect_station_number(clarification_text)
         equipment = detect_equipment_type(user_message) or detect_equipment_type(clarification_text)
@@ -947,7 +839,6 @@ def _build_context(state: AgentState) -> Optional[TroubleshooterContext]:
 
     logger.info("troubleshooter_node", f"Mensaje: '{user_message[:50]}...' | is_lab={is_lab} | station={station_num} | action={action_request} | query={query_request}")
 
-    # Compute is_command
     command_keywords = [
         "iniciar", "arrancar", "ejecutar", "comienza", "comenzar", "inicia",
         "arranca", "corre", "enciende", "activa", "start", "run",
@@ -976,10 +867,6 @@ def _build_context(state: AgentState) -> Optional[TroubleshooterContext]:
         intent_analysis=intent_analysis,
     )
 
-
-# ============================================
-# FROZEN-SET HELPERS
-# ============================================
 
 _AFFIRMATIVE = frozenset({
     "yes", "sí", "si", "confirmo", "confirmar", "dale", "ok", "okay",
@@ -1010,13 +897,8 @@ def _is_affirmative(text: str) -> bool:
 
 def _is_negative(text: str) -> bool:
     words = _normalize_response(text)
-    # "no gracias" → words=["no", "gracias"] → "no" matches
     return any(w in _NEGATIVE for w in words)
 
-
-# ============================================
-# ACTION SAFETY VALIDATION
-# ============================================
 
 _ACTIONS_REQUIRE_CONFIRMATION = frozenset([
     "start_cobot",
@@ -1038,10 +920,7 @@ _ACTIONS_READ_ONLY = frozenset([
 
 
 def _validate_action_safety(action: dict, pending_context: dict = None) -> tuple:
-    """
-    Validate if an action is safe to execute.
-    Returns (is_safe, reason).
-    """
+    """Returns (is_safe, reason)."""
     action_type = action.get("action", "")
     pending_context = pending_context or {}
 
@@ -1052,7 +931,6 @@ def _validate_action_safety(action: dict, pending_context: dict = None) -> tuple
     if action_type not in _ACTIONS_DIRECT and action_type not in _ACTIONS_REQUIRE_CONFIRMATION:
         return False, f"Unknown action type: '{action_type}'"
 
-    # Guard: auto_fix from generic phrases ("dale", "hazlo") only if repair context exists
     if action_type == "auto_fix":
         has_repair_context = (
             pending_context.get("awaiting_repair_confirmation")
@@ -1070,8 +948,7 @@ def _read_hitl_type(pending: dict) -> str:
     if isinstance(hitl, dict) and hitl.get("type"):
         if not hitl.get("consumed"):
             return hitl["type"]
-        return ""  # Already consumed
-    # Legacy fallback
+        return ""
     if pending.get("awaiting_cobot_confirmation"):
         return "cobot_confirmation"
     if pending.get("awaiting_repair_confirmation"):
@@ -1107,10 +984,6 @@ def _compute_diagnostic_confidence(
     return round(min(base, 1.0), 2)
 
 
-# ============================================
-# RETURN HELPERS
-# ============================================
-
 def _return_needs_context(ctx: TroubleshooterContext, output: Any, payload: list,
                           extra_pending: Optional[Dict] = None,
                           hitl_type: str = "worker_clarification",
@@ -1124,7 +997,6 @@ def _return_needs_context(ctx: TroubleshooterContext, output: Any, payload: list
     if extra_pending:
         updated_context.update(extra_pending)
 
-    # Structured HITL namespace (backward-compat: legacy flat flags still present in extra_pending)
     updated_context["hitl"] = {"type": hitl_type, "consumed": False}
 
     return {
@@ -1170,15 +1042,10 @@ def _return_error(ctx: TroubleshooterContext, code: str, message: str) -> Dict[s
         "events": ctx.events,
     }
 
-# ============================================
-# HANDLER: UNRECOGNIZED COMMAND
-# ============================================
-
 def _handle_unrecognized_command(ctx: TroubleshooterContext) -> Dict[str, Any]:
     logger.info("troubleshooter_node", f"[HANDLER] unrecognized_command: '{ctx.user_message[:50]}'")
 
-    # ── If there's equipment context or troubleshoot intent, use autonomous diagnosis
-    # instead of showing a generic "command not recognized" message.
+    # Route to autonomous diagnosis when we have enough context
     pending = ctx.pending_context or {}
     has_equipment = bool(pending.get("equipment_id"))
     has_troubleshoot_intent = (ctx.intent_analysis or {}).get("intent") == "troubleshoot"
@@ -1191,7 +1058,6 @@ def _handle_unrecognized_command(ctx: TroubleshooterContext) -> Dict[str, Any]:
         )
         return _run_autonomous_diagnosis(ctx)
 
-    # Intentar dar una respuesta útil
     msg_lower = ctx.user_message.lower()
     suggestions = []
 
@@ -1240,21 +1106,17 @@ Could you please rephrase your request?"""
     }
 
 
-# ============================================
-# HANDLER: TRY REQUEST CLARIFICATION (section 4)
-# ============================================
-
 def _try_request_clarification(ctx: TroubleshooterContext) -> Optional[Dict[str, Any]]:
     """Returns a HITL dict if clarification questions were generated, else None."""
     logger.info("troubleshooter_node", f"[HANDLER] try_clarification: msg_len={len(ctx.user_message)} is_lab={ctx.is_lab}")
-    # Skip clarification for troubleshoot mode — equipment context already provided
+    # Troubleshoot mode already has equipment context
     if ctx.interaction_mode == "troubleshoot":
         return None
 
     question_set = None
 
-    # - OPCIÓN 1: Generar preguntas dinámicas con LLM -
-    if len(ctx.user_message.split()) < 20:  # Solo para mensajes cortos/vagos
+    # Only generate dynamic questions for short/vague messages
+    if len(ctx.user_message.split()) < 20:
         ctx.events.append(event_report("troubleshooting", " Generando preguntas contextuales..."))
 
         try:
@@ -1271,9 +1133,8 @@ def _try_request_clarification(ctx: TroubleshooterContext) -> Optional[Dict[str,
             logger.warning("troubleshooter_node", f"Error generando preguntas dinámicas: {e}")
             question_set = None
 
-    # - OPCIÓN 2: Fallback último - preguntas genéricas -
+    # Generic fallback for very short messages
     if not question_set and len(ctx.user_message.split()) < 10:
-        # Solo para mensajes muy cortos, usar template básico
         question_set = (
             QuestionBuilder("troubleshooting")
             .context("Tu mensaje es un poco breve. Para ayudarte mejor:")
@@ -1312,12 +1173,8 @@ def _try_request_clarification(ctx: TroubleshooterContext) -> Optional[Dict[str,
     return None
 
 
-# ============================================
-# TOOL RESULT NARRATION
-# ============================================
-
 def _summarize_tool_result(tool_name: str, tool_args: dict, result) -> str:
-    """Generate a short human-readable summary of a tool result for real-time narration."""
+    """Generate a short human-readable summary of a tool result for real-time streaming."""
     try:
         data = result
         if isinstance(result, str):
@@ -1335,9 +1192,9 @@ def _summarize_tool_result(tool_name: str, tool_args: dict, result) -> str:
                     loss = data.get("packet_loss", 0)
                     return f"Ping a {ip}: responde en {avg}ms, {loss}% pérdida"
                 else:
-                    return f"Ping a {ip}: no responde — timeout"
+                    return f"Ping a {ip}: no responde, timeout"
             if isinstance(data, str) and "error" in data.lower():
-                return f"Ping a {ip}: error — {data[:100]}"
+                return f"Ping a {ip}: error: {data[:100]}"
 
         elif tool_name == "plc_list_connections":
             if isinstance(data, dict):
@@ -1366,7 +1223,7 @@ def _summarize_tool_result(tool_name: str, tool_args: dict, result) -> str:
                     x_s = f"{x:.1f}" if isinstance(x, (int, float)) else str(x)
                     y_s = f"{y:.1f}" if isinstance(y, (int, float)) else str(y)
                     z_s = f"{z:.1f}" if isinstance(z, (int, float)) else str(z)
-                    return f"xArm: X={x_s} Y={y_s} Z={z_s} — {data.get('state', '?')}"
+                    return f"xArm: X={x_s} Y={y_s} Z={z_s}, state={data.get('state', '?')}"
                 error = data.get("error_code", 0)
                 if error:
                     return f"xArm: error code {error}, warning {data.get('warning_code', 0)}"
@@ -1400,20 +1257,15 @@ def _summarize_tool_result(tool_name: str, tool_args: dict, result) -> str:
                 if results:
                     return f"Web: {results} resultados encontrados"
 
-        # For errors in the response
         if isinstance(data, dict) and data.get("status") == "error":
             error_msg = data.get("error", "error desconocido")
-            return f"{tool_name}: error — {error_msg[:80]}"
+            return f"{tool_name}: error: {error_msg[:80]}"
 
     except Exception:
         pass
 
     return ""
 
-
-# ============================================
-# UNIFIED REACT TOOL-CALLING LOOP
-# ============================================
 
 def _run_tool_agent_loop(
     llm_with_tools,
@@ -1423,11 +1275,7 @@ def _run_tool_agent_loop(
     events: list = None,
     stream_cb=None,
 ) -> tuple:
-    """
-    Unified ReAct tool-calling loop.
-    Mutates messages_chain in-place (appends AI + ToolMessage).
-    Returns (tokens_used, called_tools_set).
-    """
+    """ReAct tool-calling loop. Mutates messages_chain in-place. Returns (tokens_used, called_tools_set)."""
     tokens_used = 0
     called_tools = set()
     consecutive_failures = 0
@@ -1448,25 +1296,23 @@ def _run_tool_agent_loop(
 
         messages_chain.append(response)
 
-        # Stream the thinking text to frontend in real-time via callback
         if response.content:
             thinking_text = response.content.strip()
             if thinking_text:
-                # Solo narrar textos cortos (resúmenes del LLM entre tool calls).
-                # Textos largos (>200 chars) son análisis completos que van en la respuesta final.
+                # Only narrate short texts; long ones are final analysis
                 if len(thinking_text) < 200:
                     if events is not None:
                         events.append(event_narration("troubleshooting", thinking_text, phase="thinking"))
                 if stream_cb:
                     stream_cb({"type": "partial", "content": thinking_text})
 
-        # Force-retry: si es la primera iteración y el LLM no llamó tools, re-promptear
+        # Force tool usage on first iteration
         if iteration == 0 and not response.tool_calls and response.content:
             logger.warning("troubleshooter_node",
                            "First iteration: no tool calls. Re-prompting to force investigation.")
             messages_chain.append(HumanMessage(
                 content="You must investigate using your tools before diagnosing. "
-                        "Call a diagnostic tool now. Do not write more text — use a tool."
+                        "Call a diagnostic tool now. Do not write more text, use a tool."
             ))
             continue
 
@@ -1500,7 +1346,6 @@ def _run_tool_agent_loop(
 
             called_tools.add(call_key)
 
-            # Event emission for tool execution
             if tool_name == "search_equipment_manual":
                 query = tool_args.get("query", "")
                 if events is not None:
@@ -1547,7 +1392,6 @@ def _run_tool_agent_loop(
                     result = tool_map[tool_name].invoke(tool_args)
                     consecutive_failures = 0
 
-                    # Stream result summary as real-time narration
                     result_summary = _summarize_tool_result(tool_name, tool_args, result)
                     if result_summary and stream_cb:
                         stream_cb({"type": "partial", "content": result_summary})
@@ -1565,7 +1409,7 @@ def _run_tool_agent_loop(
                 result = f"Unknown tool: {tool_name}"
                 consecutive_failures += 1
 
-            # RAG empty-result retry: force LLM to try different keywords
+            # Retry RAG with different keywords on empty results
             if tool_name == "search_equipment_manual":
                 result_str = str(result)
                 no_results = (
@@ -1608,42 +1452,26 @@ def _run_tool_agent_loop(
     return tokens_used, called_tools
 
 
-def _select_hardware_tools(equipment_type: str = "", equipment_brand: str = "") -> list:
-    """Select READ-ONLY hardware tools based on equipment type.
-
-    The troubleshooter NEVER gets actuation tools (move, write, gripper).
-    It can only observe — read positions, status, errors, ping IPs.
-    """
+def _select_hardware_tools(equipment_type: str = "") -> list:
+    """Select read-only hardware tools based on equipment type."""
     tools = []
-    hint = f"{equipment_type} {equipment_brand}".lower()
-
-    # Always include network tools — ping is step 1 of any hardware diagnosis
     tools.extend(NETWORK_READ_TOOLS)
 
-    if any(kw in hint for kw in ["xarm", "ufactory", "lite"]):
+    type_lower = equipment_type.lower()
+    if type_lower == "xarm":
         tools.extend(XARM_READ_TOOLS)
-    elif any(kw in hint for kw in ["abb", "irb", "omnicore", "irc5"]):
+    elif type_lower == "abb":
         tools.extend(ABB_READ_TOOLS)
-    elif any(kw in hint for kw in ["plc", "siemens", "s7", "1200", "1500"]):
+    elif type_lower == "plc":
         tools.extend(PLC_READ_TOOLS)
-    elif any(kw in hint for kw in ["robot", "cobot"]):
-        tools.extend(XARM_READ_TOOLS)
-        tools.extend(ABB_READ_TOOLS)
     else:
-        # Unknown → give all read tools
         tools.extend(ALL_READ_TOOLS)
 
     return tools
 
 
-# ============================================
-# HANDLER: AUTONOMOUS DIAGNOSIS (troubleshoot mode)
-# ============================================
-
 def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
-    # ── Greeting guard: don't diagnose if user just said hi ──
     _msg_clean = ctx.user_message.strip().lower()
-    # Remove equipment context prefix if present
     if "[equipment context]" in _msg_clean:
         _parts = ctx.user_message.split("[Problem]", 1)
         _msg_clean = _parts[-1].strip().lower() if len(_parts) > 1 else _msg_clean
@@ -1656,7 +1484,7 @@ def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
 
         output = WorkerOutputBuilder.troubleshooting(
             content=greeting_response,
-            problem_identified="Greeting — awaiting problem description",
+            problem_identified="Greeting, awaiting problem description",
             severity="low",
             summary="User greeted, awaiting problem description",
             confidence=1.0,
@@ -1675,7 +1503,6 @@ def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
     except Exception as e:
         return _return_error(ctx, "LLM_INIT_ERROR", str(e))
 
-    # Obtener conocimiento relevante
     knowledge_context = ""
     if LAB_KNOWLEDGE_AVAILABLE:
         try:
@@ -1683,19 +1510,16 @@ def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("troubleshooter_node", f"Error obteniendo conocimiento: {e}")
 
-    # Mensaje combinado
     full_message = ctx.user_message
     if ctx.clarification_text:
         full_message = f"{ctx.user_message}\n\n**Información del usuario:**\n{ctx.clarification_text}"
 
     ctx.events.append(event_report("troubleshooting", "Starting autonomous diagnosis..."))
     logger.info("troubleshooter_node", f"[HANDLER] autonomous_diagnosis: equipment_id={ctx.pending_context.get('equipment_id')}")
-    logger.info("troubleshooter_node", "Troubleshoot mode: using equipment manual RAG")
     from src.agent.utils.stream_utils import get_worker_stream
     stream = get_worker_stream(ctx.state, "troubleshooting")
     stream_cb = stream._cb if stream.is_active else None
 
-    # Get equipment document IDs from pending_context
     equipment_doc_ids = []
     manual_tool = None
     try:
@@ -1714,7 +1538,6 @@ def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
     except Exception as e:
         logger.error("troubleshooter_node", f"Error creating manual tool: {e}")
 
-    # Extract equipment info vs problem description
     pending = ctx.pending_context or {}
     equipment_id = pending.get("equipment_id")
     equipment_info = ""
@@ -1726,7 +1549,6 @@ def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
             equipment_info = parts[0]
             problem_desc = parts[1] if len(parts) > 1 else ctx.user_message
         else:
-            # Build equipment context from resolved data in pending_context
             eq_name = pending.get("equipment_name", "")
             eq_brand = pending.get("equipment_brand", "")
             eq_model = pending.get("equipment_model", "")
@@ -1744,7 +1566,6 @@ def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
     if ctx.clarification_text:
         problem_desc = f"{problem_desc}\n\n**User clarification:**\n{ctx.clarification_text}"
 
-    # Build prompt
     prompt = TROUBLESHOOT_AUTONOMOUS_PROMPT.format(
         equipment_context=equipment_info,
         problem_description=problem_desc,
@@ -1752,25 +1573,24 @@ def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
         user_name=ctx.user_name,
     )
 
-    # Inject interaction mode instructions
     mode_instr = get_mode_instructions(ctx.state)
     if mode_instr:
         prompt += mode_instr
 
-    # Build tool list: hardware diagnostics + manual RAG + web search
+    # Inject equipment spec + troubleshoot skills
+    eq_context = build_equipment_context_block(ctx.state, categories=["troubleshoot"])
+    if eq_context:
+        prompt = eq_context + "\n\n" + prompt
+
     ts_tools = []
 
-    # 1. Hardware diagnostic tools (used FIRST in investigation)
     eq_type = pending.get("equipment_type", "")
-    eq_brand = pending.get("equipment_brand", "")
-    hw_tools = _select_hardware_tools(eq_type, eq_brand)
+    hw_tools = _select_hardware_tools(eq_type)
     ts_tools.extend(hw_tools)
 
-    # 2. Manual RAG (used when hardware checks pass but problem persists)
     if manual_tool:
         ts_tools.append(manual_tool)
 
-    # 3. Web search fallback
     web_tool = get_web_search_tool()
     if web_tool:
         ts_tools.append(web_tool)
@@ -1788,7 +1608,7 @@ def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
     else:
         llm_with_tools = llm
         tool_map = {}
-        logger.warning("troubleshooter_node", "NO TOOLS BOUND — agent will not be able to investigate")
+        logger.warning("troubleshooter_node", "NO TOOLS BOUND, agent will not be able to investigate")
 
     model_name = ctx.state.get("llm_model") or os.getenv("DEFAULT_MODEL", "")
     logger.info("troubleshooter_node", f"Using model: {model_name}")
@@ -1807,7 +1627,6 @@ def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
         stream_cb=stream_cb,
     )
 
-    # Extract final response
     result_text = ""
     for msg in reversed(messages_chain):
         if isinstance(msg, AIMessage) and msg.content and not getattr(msg, "tool_calls", None):
@@ -1821,14 +1640,12 @@ def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
     logger.info("troubleshooter_node",
                  f"Troubleshoot complete: {len(called_tools)} searches, {tokens_used} tokens, {processing_time:.0f}ms")
 
-    # Stream final response chunk
     if stream_cb:
         stream_cb({"type": "response", "content": result_text})
 
     severity = extract_severity(ctx.user_message + " " + result_text)
     clean_result, suggestions = extract_suggestions_from_text(result_text)
 
-    # Determine if real evidence was found (not just hardcoded True)
     _evidence_tools = {
         "search_equipment_manual", "web_search_diagnostic",
         "xarm_get_full_status", "xarm_get_position",
@@ -1878,10 +1695,6 @@ def _run_autonomous_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
         "token_usage": tokens_used,
     }
 
-# ============================================
-# HANDLER: SIMPLE DIAGNOSIS (single LLM call)
-# ============================================
-
 def _run_simple_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
     logger.info("troubleshooter_node", f"[HANDLER] simple_diagnosis: is_lab={ctx.is_lab} equipment={ctx.equipment}")
     evidence_text = get_evidence_from_context(ctx.state)
@@ -1892,7 +1705,6 @@ def _run_simple_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
     except Exception as e:
         return _return_error(ctx, "LLM_INIT_ERROR", str(e))
 
-    # Obtener conocimiento relevante
     knowledge_context = ""
     if LAB_KNOWLEDGE_AVAILABLE:
         try:
@@ -1900,7 +1712,6 @@ def _run_simple_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("troubleshooter_node", f"Error obteniendo conocimiento: {e}")
 
-    # Mensaje combinado
     full_message = ctx.user_message
     if ctx.clarification_text:
         full_message = f"{ctx.user_message}\n\n**Información del usuario:**\n{ctx.clarification_text}"
@@ -1913,10 +1724,14 @@ def _run_simple_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
         user_name=ctx.user_name,
     )
 
-    # Inject interaction mode instructions (e.g. troubleshoot, voice)
     mode_instr = get_mode_instructions(ctx.state)
     if mode_instr:
         prompt += mode_instr
+
+    # Inject equipment spec + troubleshoot skills
+    eq_context = build_equipment_context_block(ctx.state, categories=["troubleshoot"])
+    if eq_context:
+        prompt = eq_context + "\n\n" + prompt
 
     tokens_used = 0
     try:
@@ -1933,17 +1748,11 @@ def _run_simple_diagnosis(ctx: TroubleshooterContext) -> Dict[str, Any]:
                                       called_tools=set(), evidence_text=evidence_text)
 
 
-# ============================================
-# SHARED: BUILD DIAGNOSIS RESPONSE (section 6)
-# ============================================
-
 def _build_diagnosis_response(ctx: TroubleshooterContext, result_text: str,
                                tokens_used: int, processing_time: float,
                                called_tools: set = None, evidence_text: str = "") -> Dict[str, Any]:
     """Build the final diagnosis response dict (shared by ReAct and simple paths)."""
     severity = extract_severity(ctx.user_message + " " + result_text)
-
-    # Extraer sugerencias del resultado
     clean_result, suggestions = extract_suggestions_from_text(result_text)
 
     _tools = called_tools or set()
@@ -1970,12 +1779,10 @@ def _build_diagnosis_response(ctx: TroubleshooterContext, result_text: str,
     logger.node_end("troubleshooter_node", {"severity": severity, "is_lab": ctx.is_lab})
     ctx.events.append(event_report("troubleshooting", f"Diagnosis ready (Severity: {severity})"))
 
-    # Limpiar contexto
     clean_context = ctx.pending_context.copy()
     clean_context.pop("user_clarification", None)
     clean_context.pop("original_query", None)
 
-    # Sugerencias por defecto si no se extrajeron del LLM
     if not suggestions:
         suggestions = [
             "Check other stations for similar issues",
@@ -1995,17 +1802,10 @@ def _build_diagnosis_response(ctx: TroubleshooterContext, result_text: str,
     }
 
 
-# ============================================
-# NODO PRINCIPAL (DISPATCHER)
-# ============================================
-
 def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Worker de troubleshooting con integración al laboratorio ATLAS.
-    """
+    """Main troubleshooting worker dispatcher."""
     ctx = _build_context(state)
     if ctx is None:
-        # _build_context returns None when no user message
         events = [event_execute("troubleshooting", "Analizando problema...")]
         error_output = create_error_output("troubleshooting", "NO_MESSAGE", "No hay mensaje")
         return {
@@ -2014,23 +1814,18 @@ def troubleshooter_node(state: AgentState) -> Dict[str, Any]:
             "events": events,
         }
 
-    # Confirmation flows (pending context from previous HITL)
     hitl_type = _read_hitl_type(ctx.pending_context)
     if hitl_type in ("cobot_confirmation", "repair_confirmation", "health_query"):
-        # Legacy HITL types from removed lab tools — route to diagnosis
         return _run_autonomous_diagnosis(ctx)
 
-    # Unrecognized command
     if ctx.is_command and not ctx.action_request and not ctx.query_request:
         return _handle_unrecognized_command(ctx)
 
-    # Clarification
     if not ctx.already_clarified and not ctx.is_command:
         result = _try_request_clarification(ctx)
         if result:
             return result
 
-    # Diagnosis paths
     if ctx.interaction_mode == "troubleshoot":
         return _run_autonomous_diagnosis(ctx)
     return _run_simple_diagnosis(ctx)

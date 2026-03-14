@@ -19,7 +19,7 @@ from .edge_router import (
 )
 
 # ── Device tools ──
-from .xarm_tools import XARM_TOOLS, XARM_READ_TOOLS, XARM_ACTUATE_TOOLS, XARM_DEMO_TOOLS
+from .xarm_tools import XARM_TOOLS, XARM_READ_TOOLS, XARM_ACTUATE_TOOLS, XARM_CONFIG_TOOLS, XARM_DEMO_TOOLS
 from .abb_tools import ABB_TOOLS, ABB_READ_TOOLS, ABB_ACTUATE_TOOLS
 from .plc_tools import PLC_TOOLS, PLC_READ_TOOLS, PLC_WRITE_TOOLS
 from .network_tools import NETWORK_TOOLS, NETWORK_READ_TOOLS
@@ -38,6 +38,7 @@ __all__ = [
     "XARM_TOOLS",
     "XARM_READ_TOOLS",
     "XARM_ACTUATE_TOOLS",
+    "XARM_CONFIG_TOOLS",
     "XARM_DEMO_TOOLS",
     "ABB_TOOLS",
     "ABB_READ_TOOLS",

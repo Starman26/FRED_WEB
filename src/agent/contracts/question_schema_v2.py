@@ -1,22 +1,14 @@
 """
-question_schema_v2.py — Fluent HITL question API for FastAPI + SSE
+question_schema_v2.py
 
-Key differences from v1:
-- QuestionBuilder: fluent API to build question sets
-- to_interrupt_payload(): returns a self-contained dict for interrupt() + SSE
-- AnswerSet.from_resume(): parses resume data from frontend (dict or legacy list)
-- No Pydantic — pure dataclasses for simplicity and speed
-- No display/formatting logic — the frontend handles rendering
+Fluent HITL question API for FastAPI + SSE. Pure dataclasses, no Pydantic.
+QuestionBuilder builds question sets; AnswerSet parses resume data.
 """
 from typing import List, Optional, Dict, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
 import json
 
-
-# ============================================
-# ENUMS
-# ============================================
 
 class QuestionType(str, Enum):
     CHOICE = "choice"
@@ -33,10 +25,6 @@ class Urgency(str, Enum):
     HIGH = "high"
     CRITICAL = "critical"
 
-
-# ============================================
-# DATA CLASSES
-# ============================================
 
 @dataclass
 class Condition:
@@ -129,8 +117,7 @@ class QuestionSet:
     urgency: Urgency = Urgency.MEDIUM
 
     def to_interrupt_payload(self) -> dict:
-        """Returns the dict that goes directly into interrupt() and SSE.
-        The frontend receives this as-is (plus session_id added by api_server)."""
+        """Dict for interrupt() and SSE. Frontend receives as-is."""
         return {
             "type": "clarification",
             "worker": self.worker,
@@ -144,11 +131,11 @@ class QuestionSet:
         }
 
     def to_dict_list(self) -> list:
-        """Backward compat: list of question dicts (for worker_output)."""
+        """Backward compat: list of question dicts."""
         return [q.to_dict() for q in self.questions]
 
     def to_display_text(self, current_step: int = 0) -> str:
-        """Text fallback for content field (used in worker_output.content)."""
+        """Text fallback for worker_output.content."""
         lines = []
         if self.title:
             lines.append(f"## {self.title}\n")
@@ -164,7 +151,7 @@ class QuestionSet:
         return "\n".join(lines)
 
     def model_dump_json(self) -> str:
-        """Backward compat: JSON string for pending_context storage."""
+        """Backward compat: JSON string for pending_context."""
         return json.dumps(self.to_interrupt_payload(), ensure_ascii=False)
 
 
@@ -223,18 +210,13 @@ class AnswerSet:
         return "\n".join(f"- {k}: {v}" for k, v in self.answers.items())
 
     def to_user_clarification(self) -> str:
-        """Convert to a single string for backward compat with pending_context['user_clarification'].
-        Single answer → just the value. Multiple → key: value lines."""
+        """Single answer returns just the value; multiple returns key: value lines."""
         if not self.answers:
             return ""
         if len(self.answers) == 1:
             return str(list(self.answers.values())[0])
         return "\n".join(f"{k}: {v}" for k, v in self.answers.items())
 
-
-# ============================================
-# BUILDER
-# ============================================
 
 class QuestionBuilder:
     """Fluent API to build QuestionSets."""
@@ -350,10 +332,6 @@ class QuestionBuilder:
         )
 
 
-# ============================================
-# REGISTRY
-# ============================================
-
 class QuestionRegistry:
     """Registry of predefined question templates, keyed by string."""
 
@@ -372,10 +350,6 @@ class QuestionRegistry:
     def keys(self) -> List[str]:
         return list(self._templates.keys())
 
-
-# ============================================
-# PREDEFINED TROUBLESHOOTING QUESTIONS
-# ============================================
 
 def _build_troubleshooting_registry() -> QuestionRegistry:
     r = QuestionRegistry()
@@ -487,10 +461,7 @@ def quick_questions(
     wizard_mode: bool = True,
     max_questions: int = 5,
 ) -> QuestionSet:
-    """
-    Generate a QuestionSet from predefined templates based on missing info keys.
-    Replaces get_troubleshooting_questions() from v1.
-    """
+    """Generate a QuestionSet from predefined templates based on missing info keys."""
     info_to_key = {
         "modelo": "plc_model", "plc": "plc_model",
         "version": "tia_version", "tia": "tia_version",
@@ -516,7 +487,6 @@ def quick_questions(
         if len(questions) >= max_questions:
             break
 
-    # Defaults if nothing matched
     if not questions:
         for key in ["plc_model", "error_message"]:
             q = troubleshooting_registry.get(key)

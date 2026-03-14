@@ -1,11 +1,8 @@
 """
-orchestrator.py - Adaptive Router + Synthesizer
+Adaptive Router + Synthesizer.
 
-Contiene:
-- adaptive_router_node: Router inteligente que evalúa outputs de workers y adapta el plan
-- synthesize_node: Combina outputs de workers en una respuesta coherente
-
-NOTA: orchestrator_plan_node fue reemplazado por planner_node en src/agent/nodes/planner.py
+- adaptive_router_node: Evaluates worker outputs and adapts the plan
+- synthesize_node: Combines worker outputs into a coherent response
 """
 import os
 import json
@@ -30,15 +27,10 @@ _WORKER_DESC = {
     "analysis": "Analyzing data",
     "chat": "Thinking",
     "summarizer": "Compressing memory",
-    "practice": "practice — Guided hands-on session with bridge-in-the-loop (BITL)",
+    "practice": "practice - Guided hands-on session with bridge-in-the-loop (BITL)",
 }
 
 
-# ============================================
-# SYNTHESIS PROMPTS
-# ============================================
-
-# Shared synthesis base — injected into all synth prompts
 _SYNTH_BASE = f"""
 {get_truth_hierarchy()}
 
@@ -169,6 +161,7 @@ Give a spoken response that is immediately understandable, operationally useful,
 5. If uncertain, say exactly what is not confirmed
 
 ## STRICT RULES
+- ALWAYS respond in English regardless of user language
 - FIRST PERSON only
 - Maximum 2 short sentences, 3 only if absolutely necessary
 - No markdown, no bullets, no lists, no code formatting
@@ -199,26 +192,13 @@ Bad:  "I'm pleased to inform you that all systems are operational."
 Your voice response:""".format(base=_SYNTH_BASE)
 
 
-# ============================================
-# ADAPTIVE ROUTER
-# ============================================
-
 def _evaluate_worker_output(
     last_output: Dict[str, Any],
     plan: List[str],
     current_step: int,
 ) -> Dict[str, Any]:
-    """
-    Evaluación heurística del output del último worker (0 LLM calls).
-    Usa campos del WorkerOutput contract para decidir si adaptar el plan.
-
-    Returns:
-        {
-            "action": "continue" | "skip_remaining" | "add_worker" | "stop_early",
-            "reason": str,
-            "modified_plan": Optional[List[str]],
-        }
-    """
+    """Heuristic evaluation of last worker output (0 LLM calls).
+    Returns action, reason, and optionally a modified plan."""
     status = last_output.get("status", "ok")
     confidence = last_output.get("confidence", 0.8)
     content = last_output.get("content", "")
@@ -228,7 +208,7 @@ def _evaluate_worker_output(
 
     remaining_plan = plan[current_step + 1:]
 
-    # RULE 1: Worker error crítico → synthesize con lo que hay
+    # Critical error: synthesize with available results
     if status == "error":
         return {
             "action": "stop_early",
@@ -236,14 +216,14 @@ def _evaluate_worker_output(
             "modified_plan": None,
         }
 
-    # RULE 2: Research sin evidencia → quitar tutor del plan
+    # No evidence from research: tutor has nothing to explain
     if worker_name == "research" and len(evidence) == 0:
         if "tutor" in remaining_plan:
             new_remaining = [w for w in remaining_plan if w != "tutor"]
             if not new_remaining:
                 return {
                     "action": "stop_early",
-                    "reason": "Research found no evidence; skipping tutor — no context to explain",
+                    "reason": "Research found no evidence; skipping tutor, no context to explain",
                     "modified_plan": None,
                 }
             return {
@@ -252,7 +232,7 @@ def _evaluate_worker_output(
                 "modified_plan": plan[: current_step + 1] + new_remaining,
             }
 
-    # RULE 3: Alta confianza y plan completo → stop early
+    # High confidence and plan complete: stop early
     if (
         status == "ok"
         and confidence >= 0.9
@@ -265,7 +245,7 @@ def _evaluate_worker_output(
             "modified_plan": None,
         }
 
-    # RULE 4: Research tiene gaps sobre entidades del lab → agregar troubleshooting
+    # Research gaps mention lab entities: add troubleshooting for real data
     if worker_name == "research" and "troubleshooting" not in remaining_plan:
         extra = last_output.get("extra", {})
         gaps = extra.get("gaps", []) if isinstance(extra, dict) else []
@@ -278,7 +258,7 @@ def _evaluate_worker_output(
                     "modified_plan": plan[: current_step + 1] + ["troubleshooting"] + remaining_plan,
                 }
 
-    # RULE 5: Troubleshooter recomienda tutor via next_actions
+    # Troubleshooter recommends tutor via next_actions
     if worker_name == "troubleshooting" and next_actions:
         for action_item in next_actions:
             if isinstance(action_item, dict):
@@ -291,7 +271,6 @@ def _evaluate_worker_output(
                         "modified_plan": plan[: current_step + 1] + remaining_plan + ["tutor"],
                     }
 
-    # Default: continue
     return {
         "action": "continue",
         "reason": f"{worker_name} completed ({status}, confidence={confidence:.2f}), advancing",
@@ -300,14 +279,8 @@ def _evaluate_worker_output(
 
 
 def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Adaptive Router: después de cada worker, evalúa el output y adapta el plan.
-
-    Tres modos:
-    1. HEURISTIC: Reglas ligeras usando campos del WorkerOutput (0 LLM calls)
-    2. HUMAN-IN-THE-LOOP: Si el worker necesita input del usuario
-    3. ANTI-LOOP: Forzar synthesize después de 3+ ciclos de routing
-    """
+    """Evaluates worker output after each step and adapts the plan.
+    Handles anti-loop, HITL, and heuristic plan adaptation."""
     logger.node_start("adaptive_router", {
         "plan": state.get("orchestration_plan"),
         "current_step": state.get("current_step"),
@@ -326,9 +299,7 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
     last_output = worker_outputs[-1] if worker_outputs else None
     current_worker_name = plan[current_step] if current_step < len(plan) else None
 
-    # ══════════════════════════════════════════
-    # ANTI-LOOP
-    # ══════════════════════════════════════════
+    # Anti-loop
     route_count = state.get("_route_count", 0) + 1
 
     if route_count > 3:
@@ -342,9 +313,7 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
             "events": events + [event_route("adaptive_router", "Anti-loop: forcing synthesize", route="synthesize")],
         }
 
-    # ══════════════════════════════════════════
-    # HUMAN-IN-THE-LOOP: User already responded → re-execute worker
-    # ══════════════════════════════════════════
+    # HITL: user already responded, re-execute worker
     has_user_clarification = bool(pending_context.get("user_clarification"))
     wizard_completed = pending_context.get("wizard_completed", False)
     hitl_consumed = pending_context.get("_hitl_consumed", False)
@@ -365,9 +334,7 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
                 "events": events + [event_route("adaptive_router", f"Re-executing {current_worker_name} with user input", route=current_worker_name)],
             }
 
-    # ══════════════════════════════════════════
-    # HUMAN-IN-THE-LOOP: Worker needs input
-    # ══════════════════════════════════════════
+    # HITL: worker needs input
     if last_output and last_output.get("status") == "needs_context":
         questions = last_output.get("clarification_questions", []) or state_questions
         logger.info("adaptive_router", "Worker needs input, routing to human_input")
@@ -379,9 +346,7 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
             "events": events + [event_route("adaptive_router", "Requires human input", route="human_input")],
         }
 
-    # ══════════════════════════════════════════
-    # ADAPTIVE EVALUATION
-    # ══════════════════════════════════════════
+    # Adaptive evaluation
     if last_output:
         evaluation = _evaluate_worker_output(last_output, plan, current_step)
 
@@ -409,9 +374,7 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
             plan = evaluation["modified_plan"]
             logger.info("adaptive_router", f"Plan adapted: {plan}")
 
-    # ══════════════════════════════════════════
-    # ADVANCE to next step
-    # ══════════════════════════════════════════
+    # Advance to next step
     next_step = current_step + 1
 
     if next_step >= len(plan):
@@ -425,7 +388,6 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
             "events": events + [event_route("adaptive_router", "Plan completed", route="synthesize")],
         }
 
-    # Pass evidence context to next worker
     accumulated_evidence = list(pending_context.get("evidence", []))
     for output in worker_outputs:
         evidence = output.get("evidence", [])
@@ -449,15 +411,9 @@ def adaptive_router_node(state: AgentState) -> Dict[str, Any]:
     }
 
 
-# ============================================
-# SYNTHESIZE NODE
-# ============================================
-
 def _strip_emojis(text: str) -> str:
     """Remove all emojis from text."""
-    # Known emojis used in the codebase
     text = re.sub(r"[🏭📍📝🖥️🤖📡⚠️✅❌🔴🟢🔒🚪▶️⏹️⚡🔍🛡️⛔🔧💡🎯📊📈📉🚀💻🔄🔁⏳⏱️🕐🎉👋🧠💬🆘🛑🔔📢📌🔗📎🗂️📋📄📃🔐🔑⭐🌟💫✨🎁🎊🏆🥇🥈🥉💰💸📞📧📬🌍🌎🌏🔌🔋⚙️🛠️🔩📐📏🧪🧬🔬🔭🩺💊🧯🚒🚑🏗️🏠🏢🏫🏥🏦]", "", text)
-    # Broad unicode emoji ranges
     emoji_pattern = re.compile(
         "["
         "😀-🙏"
@@ -573,12 +529,10 @@ def _save_diagnostic_history(state: dict, response_text: str):
         if not worker_outputs:
             return
 
-        # Solo guardar si hubo troubleshooting, analysis, o research
         workers_used = [o.get("worker", "") for o in worker_outputs if isinstance(o, dict)]
         if not any(w in ("troubleshooting", "analysis", "research") for w in workers_used):
             return
 
-        # Extraer query del usuario
         user_query = ""
         for m in reversed(state.get("messages", [])):
             if hasattr(m, "type") and m.type == "human":
@@ -591,13 +545,10 @@ def _save_diagnostic_history(state: dict, response_text: str):
         if not user_query:
             return
 
-        # --- Extraer equipment_type ---
-        # Fuente 1: intent_analysis
         intent = state.get("intent_analysis", {})
         entities = intent.get("entities", {}) if isinstance(intent, dict) else {}
         equipment_type = entities.get("equipment")
 
-        # Fuente 2: worker outputs extras
         for output in worker_outputs:
             if not isinstance(output, dict):
                 continue
@@ -606,19 +557,16 @@ def _save_diagnostic_history(state: dict, response_text: str):
                 if not equipment_type:
                     equipment_type = extra.get("equipment_type")
 
-        # Fuente 3: pending_context
         pending = state.get("pending_context", {}) or {}
         if not equipment_type:
             detection = pending.get("detection", {})
             equipment_type = detection.get("equipment") if isinstance(detection, dict) else pending.get("detected_equipment")
 
-        # --- Extraer tools_used desde tool_execution_log ---
         tool_log = state.get("tool_execution_log", [])
         tools_used = list(set(
             entry.get("tool", "") for entry in tool_log if isinstance(entry, dict) and entry.get("tool")
         ))
 
-        # Fallback: extraer de worker outputs si tool_execution_log está vacío
         if not tools_used:
             for output in worker_outputs:
                 if not isinstance(output, dict):
@@ -629,7 +577,6 @@ def _save_diagnostic_history(state: dict, response_text: str):
                 if output.get("worker") == "troubleshooting":
                     tools_used.append("troubleshooting_tools")
 
-        # --- Extraer actions_taken ---
         actions_taken = [
             {
                 "tool": entry.get("tool"),
@@ -642,7 +589,6 @@ def _save_diagnostic_history(state: dict, response_text: str):
             if isinstance(entry, dict) and entry.get("tool")
         ]
 
-        # --- Extraer duration_ms total ---
         total_duration = 0
         for output in worker_outputs:
             if isinstance(output, dict):
@@ -650,7 +596,6 @@ def _save_diagnostic_history(state: dict, response_text: str):
                 if isinstance(meta, dict):
                     total_duration += meta.get("processing_time_ms", 0)
 
-        # --- Extraer evidence sources ---
         evidence_sources = []
         for output in worker_outputs:
             if not isinstance(output, dict):
@@ -663,7 +608,6 @@ def _save_diagnostic_history(state: dict, response_text: str):
                         "type": (ev.get("metadata") or {}).get("source_type", "internal"),
                     })
 
-        # --- Build record ---
         record = {
             "session_id": state.get("_stream_session_id", ""),
             "user_id": state.get("auth_user_id") or state.get("user_id"),
@@ -679,7 +623,7 @@ def _save_diagnostic_history(state: dict, response_text: str):
             "workers_used": workers_used,
         }
 
-        # Remove None values (Supabase rejects explicit nulls for some columns)
+        # Supabase rejects explicit nulls for some columns
         record = {k: v for k, v in record.items() if v is not None}
 
         sb.schema("lab").from_("diagnostic_history").insert(record).execute()
@@ -691,21 +635,14 @@ def _save_diagnostic_history(state: dict, response_text: str):
 
 def synthesize_node(state: AgentState) -> Dict[str, Any]:
     """Synthesizes worker outputs into a coherent response.
-
-    LLM bypass conditions (saves 1 LLM call):
-    - Single chat/tutor output without sources
-    - Single research output with evidence and confidence >= 0.7
-    - Single analysis output (already self-contained)
-
-    Modes: agent, voice, chat/code, practice
-    """
+    Bypasses LLM for single lightweight/self-sufficient worker outputs."""
     logger.node_start("synthesize", {"outputs_count": len(state.get("worker_outputs", []))})
     events = [event_report("synthesize", "Combining results...")]
 
     worker_outputs = state.get("worker_outputs", [])
     interaction_mode = state.get("interaction_mode", "chat").lower()
 
-    # - Practice mode: bypass synthesis, persist updates -
+    # Practice mode: bypass synthesis, persist updates
     if interaction_mode == "practice":
         _persist_practice_updates(state)
         if worker_outputs:
@@ -724,7 +661,6 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
             "done": False, "next": "END", "events": events,
         }
 
-    # - Extract user's original question -
     user_message = ""
     for m in reversed(state.get("messages", [])):
         if isinstance(m, HumanMessage):
@@ -734,7 +670,6 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
             user_message = (m.get("content") or "").strip()
             break
 
-    # - Collect worker data -
     content_parts = []
     all_sources = set()
 
@@ -753,17 +688,14 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
 
     raw_data = "\n\n".join(content_parts)
 
-    # - Decide if LLM synthesis is needed -
     worker_names = {o.get("worker", "unknown") for o in worker_outputs}
 
-    # Bypass: Lightweight workers (chat, tutor) without sources
     is_lightweight = (
         len(worker_outputs) == 1
         and worker_names.issubset({"chat", "tutor"})
         and not all_sources
     )
 
-    # Bypass: Solo research that already synthesized with evidence
     is_self_sufficient_research = (
         len(worker_outputs) == 1
         and worker_names == {"research"}
@@ -772,13 +704,12 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
         and len(worker_outputs[0].get("content", "")) > 100
     )
 
-    # Bypass: Analysis worker (already produces complete response)
     is_analysis = (
         len(worker_outputs) == 1
         and worker_names == {"analysis"}
     )
 
-    # Troubleshooting-only: format but don't rewrite (user saw investigation in real-time)
+    # User already saw troubleshooter output in real-time
     is_troubleshoot_only = (
         len(worker_outputs) == 1
         and worker_names == {"troubleshooting"}
@@ -788,7 +719,6 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
 
     synth_tokens = 0
     if is_troubleshoot_only:
-        # Skip LLM synthesis entirely — troubleshooter already formatted
         ts_content = ""
         for out in worker_outputs:
             if isinstance(out, dict):
@@ -811,21 +741,17 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
             user_message, raw_data, all_sources, state,
         )
 
-    # - Mode-specific post-processing -
     if interaction_mode in ("chat", "code") and combined:
         combined = _format_as_markdown(combined)
 
-    # Extract suggestions before cleanup
     combined, extracted_suggestions = _extract_suggestions(combined)
     combined = _strip_emojis(combined)
 
-    # Suggestions: analysis never generates them
     if interaction_mode == "analysis":
         follow_ups = []
     else:
         follow_ups = extracted_suggestions or state.get("follow_up_suggestions", [])
 
-    # Save diagnostic to history for cross-session learning
     if interaction_mode not in ("practice",) and combined:
         _save_diagnostic_history(state, combined)
 
@@ -843,7 +769,6 @@ def synthesize_node(state: AgentState) -> Dict[str, Any]:
         "token_usage": synth_tokens,
     }
 
-    # Always emit the final formatted message
     base_return["messages"] = [AIMessage(content=combined)]
     return base_return
 
@@ -862,7 +787,6 @@ def _synthesize_with_llm(
     if sources:
         sources_text = "\nFuentes disponibles:\n" + "\n".join(f"- {s}" for s in sorted(sources))
 
-    # - Select prompt and params by mode -
     if interaction_mode == "agent":
         prompt = SYNTH_PROMPT_AGENT.format(
             user_question=user_question,
@@ -903,7 +827,6 @@ def _synthesize_with_llm(
 
         result = (response.content or "").strip()
 
-        # Post-processing for voice/agent
         if interaction_mode in ("agent", "voice"):
             result = _strip_markdown(result)
             result = _strip_emojis(result)
@@ -917,7 +840,6 @@ def _synthesize_with_llm(
 
     except Exception as e:
         logger.error("synthesize", f"Synthesis LLM error: {e}")
-        # Fallback: concatenate worker outputs
         parts = []
         for line in raw_data.split("\n\n"):
             if "]: " in line:
@@ -932,23 +854,16 @@ def _synthesize_with_llm(
         return combined, 0
 
 
-# ============================================
-# FORMAT HELPERS
-# ============================================
-
 def _format_as_markdown(content: str) -> str:
-    """Ensure responses have proper markdown structure for chat/code mode."""
+    """Clean up markdown structure for chat/code mode."""
     content = re.sub(r"\n{4,}", "\n\n\n", content)
 
-    # Already has headings → just clean
     if re.search(r"^#{1,3}\s", content, re.MULTILINE):
         return content
 
-    # Short responses don't need formatting
     if len(content) < 200:
         return content
 
-    # Strip leading blank lines
     lines = content.split("\n")
     cleaned = []
     for line in lines:
@@ -959,10 +874,6 @@ def _format_as_markdown(content: str) -> str:
 
     return "\n".join(cleaned)
 
-
-# ============================================
-# PUBLIC HELPERS
-# ============================================
 
 def get_orchestration_status(state: AgentState) -> Dict[str, Any]:
     """Get current orchestration status for debugging/monitoring."""

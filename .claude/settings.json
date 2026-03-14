@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r equipment /c/Products/REPO/FRED_WEB --include=*.py --include=*.ts --include=*.tsx --include=*.js --include=*.jsx)",
+      "Bash(xargs grep:*)",
+      "Bash(grep -r \"admin\\\\|studio\\\\|panel\\\\|dashboard\\\\|crud\" /c/Products/REPO/FRED_WEB --include=*.py)",
+      "Bash(grep -E \"\\\\.\\(html|js|jsx|tsx|ts|vue|svelte\\)$\")",
+      "Bash(grep -r \"localhost:4173\\\\|localhost:3000\\\\|react\\\\|vue\\\\|angular\\\\|svelte\" /c/Products/REPO/FRED_WEB --include=*.py --include=*.json)"
+    ]
+  }
+}

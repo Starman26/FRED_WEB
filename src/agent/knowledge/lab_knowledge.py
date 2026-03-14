@@ -1,17 +1,10 @@
 """
-lab_knowledge.py - Conocimiento base del Laboratorio de Manufactura
+lab_knowledge.py
 
-Este archivo contiene información fundamental sobre el laboratorio que el agente
-debe conocer para responder preguntas y contextualizar sus respuestas.
-
-INSTRUCCIONES PARA EDITAR:
-- Modifica las constantes según la configuración real de tu laboratorio
-- El agente usará esta información en sus respuestas
+Base knowledge about the FrED Factory lab: equipment, stations, terminology,
+safety procedures, and common errors. Edit constants to match your lab config.
 """
 
-# ============================================
-# INFORMACIÓN GENERAL DEL LABORATORIO
-# ============================================
 
 LAB_NAME = "Laboratorio FrED Factory"
 LAB_DESCRIPTION = """
@@ -33,9 +26,6 @@ Esta desarrollado para enseñarle a los estudiantes de la Facultad de
 Ingen
 """
 
-# ============================================
-# ROBOTS Y COBOTS
-# ============================================
 
 ROBOTS = {
     "ALFREDO": {
@@ -65,13 +55,8 @@ jaulas de seguridad. Está equipado con:
             4: "Rutina de paletizado",
         }
     },
-    # Agrega más robots aquí según tu laboratorio
-    # "ROBOT_2": { ... }
 }
 
-# ============================================
-# ESTACIONES DE TRABAJO
-# ============================================
 
 STATIONS = {
     1: {
@@ -136,9 +121,6 @@ STATIONS = {
     },
 }
 
-# ============================================
-# EQUIPOS Y TECNOLOGÍAS
-# ============================================
 
 EQUIPMENT_INFO = {
     "PLCs": {
@@ -172,9 +154,6 @@ los cobots no pueden operar por seguridad.
     },
 }
 
-# ============================================
-# TERMINOLOGÍA Y FRASES COMUNES
-# ============================================
 
 TERMINOLOGY = {
     "ALFREDO": "Robot colaborativo principal del laboratorio (UR5e en Estación 1)",
@@ -195,9 +174,6 @@ TERMINOLOGY = {
     "Tiempo de ciclo": "Duración de un ciclo completo de producción",
 }
 
-# ============================================
-# PAPERS Y DOCUMENTACIÓN IMPORTANTE
-# ============================================
 
 IMPORTANT_DOCUMENTS = [
     {
@@ -215,12 +191,8 @@ IMPORTANT_DOCUMENTS = [
         "descripcion": "Documentación técnica de los cobots UR",
         "temas": ["Programación", "Seguridad", "Mantenimiento"],
     },
-    # Agrega más documentos relevantes
 ]
 
-# ============================================
-# PROCEDIMIENTOS DE SEGURIDAD
-# ============================================
 
 SAFETY_PROCEDURES = """
 ## Procedimientos de Seguridad del Laboratorio
@@ -241,9 +213,6 @@ SAFETY_PROCEDURES = """
 3. No intentar reiniciar sin autorización
 """
 
-# ============================================
-# ERRORES COMUNES Y SOLUCIONES
-# ============================================
 
 COMMON_ERRORS = {
     "CONN_TIMEOUT": {
@@ -269,19 +238,13 @@ COMMON_ERRORS = {
 }
 
 
-# ============================================
-# FUNCIONES HELPER
-# ============================================
 
 def get_lab_knowledge_summary() -> str:
-    """Retorna un resumen del conocimiento del laboratorio para incluir en prompts"""
-    
-    # Construir lista de robots
+    """Build a lab knowledge summary for injection into prompts."""
     robots_list = []
     for name, info in ROBOTS.items():
         robots_list.append(f"- **{name}**: {info['tipo']} - {info['ubicacion']}")
     
-    # Construir lista de estaciones
     stations_list = []
     for num, info in STATIONS.items():
         stations_list.append(f"- **Estación {num}** - {info['nombre']}: {info['descripcion'][:80]}...")
@@ -303,7 +266,7 @@ def get_lab_knowledge_summary() -> str:
 
 
 def get_robot_info(robot_name: str) -> str:
-    """Obtiene información detallada de un robot específico"""
+    """Get detailed info for a specific robot."""
     robot_name_upper = robot_name.upper()
     
     if robot_name_upper in ROBOTS:
@@ -328,7 +291,7 @@ def get_robot_info(robot_name: str) -> str:
 
 
 def get_station_info(station_number: int) -> str:
-    """Obtiene información detallada de una estación"""
+    """Get detailed info for a station by number."""
     if station_number in STATIONS:
         station = STATIONS[station_number]
         equipos = "\n".join([f"  - {e}" for e in station.get("equipos", [])])
@@ -350,16 +313,14 @@ def get_station_info(station_number: int) -> str:
 
 
 def get_terminology_definition(term: str) -> str:
-    """Busca la definición de un término"""
+    """Look up a term definition (exact or partial match)."""
     term_upper = term.upper()
     term_lower = term.lower()
     
-    # Buscar coincidencia exacta o parcial
     for key, value in TERMINOLOGY.items():
         if key.upper() == term_upper or key.lower() == term_lower:
             return f"**{key}**: {value}"
     
-    # Buscar coincidencia parcial
     for key, value in TERMINOLOGY.items():
         if term_lower in key.lower() or term_lower in value.lower():
             return f"**{key}**: {value}"
@@ -368,7 +329,7 @@ def get_terminology_definition(term: str) -> str:
 
 
 def get_error_solution(error_code: str) -> str:
-    """Obtiene información sobre un error y su solución"""
+    """Get error description, causes, and recommended solution."""
     error_upper = error_code.upper()
     
     if error_upper in COMMON_ERRORS:

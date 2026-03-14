@@ -1,11 +1,8 @@
 """
-analysis_node.py - Worker para análisis de datos SQL
+analysis_node.py - SQL data analysis worker.
 
-Este worker:
-- Usa tool-calling (bind_tools) para ejecutar consultas SQL de forma iterativa
-- Analiza datos de la base de datos Supabase
-- Opcionalmente genera datos de chart para el frontend
-- SOLO accesible via interaction_mode == 'analysis'
+Uses iterative tool-calling (bind_tools) to query Supabase and generate charts.
+Only accessible via interaction_mode == 'analysis'.
 """
 import json
 import os
@@ -144,11 +141,7 @@ When querying user-specific data, ALWAYS filter by auth_user_id or team_id.
 
 
 def _convert_markdown_tables_to_charts(text: str) -> str:
-    """Convert markdown tables in text to ==CHART== table blocks.
-
-    Safety net: if the LLM outputs | col | col | markdown tables instead of
-    ==CHART== blocks, this converts them automatically.
-    """
+    """Convert any markdown tables to ==CHART== blocks as a safety net."""
     table_pattern = r'(\|[^\n]+\|\n\|[-:\| ]+\|\n(?:\|[^\n]+\|\n?)+)'
 
     def _replace_table(match):
@@ -158,10 +151,8 @@ def _convert_markdown_tables_to_charts(text: str) -> str:
         if len(lines) < 3:
             return table_text
 
-        # Parse headers
         headers = [h.strip() for h in lines[0].split('|') if h.strip()]
 
-        # Parse data rows (skip separator line at index 1)
         data = []
         for line in lines[2:]:
             cells = [c.strip() for c in line.split('|') if c.strip()]
@@ -187,7 +178,7 @@ def _convert_markdown_tables_to_charts(text: str) -> str:
 
 
 def _build_conversation_history(state, max_turns: int = 2):
-    """Build recent conversation history from state messages."""
+    """Build recent conversation history, excluding the current user message."""
     from langchain_core.messages import HumanMessage as HM, AIMessage as AIM
 
     raw_messages = state.get("messages", []) or []
@@ -209,7 +200,6 @@ def _build_conversation_history(state, max_turns: int = 2):
                 content = content[:300] + "..." if len(content) > 300 else content
                 history.append(AIM(content=content))
 
-    # Remove the last message (current user message — added separately)
     if history and isinstance(history[-1], HM):
         history = history[:-1]
 
@@ -220,7 +210,6 @@ def _build_conversation_history(state, max_turns: int = 2):
 
 
 def get_last_user_message(state: AgentState) -> str:
-    """Extract the last user message."""
     for m in reversed(state.get("messages", []) or []):
         if isinstance(m, HumanMessage):
             return (m.content or "").strip()
@@ -230,12 +219,7 @@ def get_last_user_message(state: AgentState) -> str:
 
 
 def analysis_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Worker de análisis de datos SQL.
-
-    Usa tool-calling loop con bind_tools para ejecutar consultas
-    SQL de forma iterativa hasta obtener la respuesta.
-    """
+    """SQL analysis worker using iterative tool-calling."""
     start_time = datetime.utcnow()
     logger.node_start("analysis_node", {})
     events = [event_execute("analysis", "Analyzing data...")]
@@ -262,13 +246,12 @@ def analysis_node(state: AgentState) -> Dict[str, Any]:
             "events": events + [event_report("analysis", "Awaiting query")],
         }
 
-    # Analysis needs a smarter model for complex multi-step reasoning
+    # Upgrade to a stronger model for multi-step SQL reasoning
     if model_name in ("gpt-4o-mini", "gemini-2.0-flash"):
         model_name = "gpt-4o"
         state = {**state, "llm_model": model_name}
         logger.info("analysis_node", f"Upgraded model to {model_name} for analysis")
 
-    # Initialize LLM with tools
     try:
         from src.agent.utils.llm_factory import get_llm
         logger.info("analysis_node", "Calling get_llm...")
@@ -290,7 +273,7 @@ def analysis_node(state: AgentState) -> Dict[str, Any]:
             "events": events + [event_report("analysis", "Error")],
         }
 
-    # Check if previous workers already produced content (hybrid enrichment mode)
+    # Check for previous worker content (hybrid enrichment mode)
     worker_outputs = state.get("worker_outputs", [])
     previous_content = ""
     for wo in worker_outputs:
@@ -302,7 +285,6 @@ def analysis_node(state: AgentState) -> Dict[str, Any]:
     else:
         logger.info("analysis_node", "Full exploration mode: no previous worker context")
 
-    # Build messages — each step wrapped for crash diagnosis
     auth_user_id = state.get("auth_user_id", "unknown")
     team_id = state.get("team_id", "unknown")
     logger.info("analysis_node", f"auth_user_id={auth_user_id}, team_id={team_id}")
@@ -365,10 +347,9 @@ You already have a base answer above from another worker. Your job is to:
             "events": events + [event_report("analysis", "Error")],
         }
 
-    # Tool-calling loop
     total_tokens = 0
     tool_map = {t.name: t for t in ANALYST_TOOLS}
-    executed_queries = set()  # Track query_sql queries to detect repeats
+    executed_queries = set()
     consecutive_failures = 0
     force_stop = False
     stream.tool("sql_query", "Explorando estructura de la base de datos...")
@@ -393,13 +374,10 @@ You already have a base answer above from another worker. Your job is to:
 
         messages.append(response)
 
-        # Check if the LLM wants to call tools
         if not response.tool_calls:
-            # No more tool calls — LLM is done
             logger.info("analysis_node", f"Iteration {iteration}: no tool calls, LLM finished. content preview: '{(response.content or '')[:200]}'")
             break
 
-        # Execute each tool call
         for tc in response.tool_calls:
             tool_name = tc["name"]
             tool_args = tc["args"]
@@ -412,7 +390,6 @@ You already have a base answer above from another worker. Your job is to:
             elif tool_name in ("list_tables", "describe_table", "list_rpc_functions"):
                 stream.tool(tool_name, f"Explorando esquema: {tool_name}...")
 
-            # Detect repeated query_sql calls
             if tool_name == "query_sql":
                 query_key = tool_args.get("query", "").strip()
                 if query_key in executed_queries:
@@ -435,7 +412,6 @@ You already have a base answer above from another worker. Your job is to:
                 try:
                     result = tool_map[tool_name].invoke(tool_args)
                     logger.info("analysis_node", f"Tool {tool_name} returned: success={result.get('success') if isinstance(result, dict) else 'N/A'}")
-                    # Track consecutive failures for query_sql
                     if tool_name == "query_sql" and isinstance(result, dict):
                         if not result.get("success"):
                             consecutive_failures += 1
@@ -455,20 +431,17 @@ You already have a base answer above from another worker. Your job is to:
                 logger.error("analysis_node", f"Unknown tool: {tool_name}, available: {list(tool_map.keys())}")
                 result = {"success": False, "error": f"Unknown tool: {tool_name}"}
 
-            # Add tool result as ToolMessage
             messages.append(ToolMessage(
                 content=str(result) if not isinstance(result, str) else result,
                 tool_call_id=tool_id,
             ))
 
-        # If too many consecutive failures, force summary on next iteration
         if consecutive_failures >= 5:
             logger.info("analysis_node", f"5 consecutive failures, forcing stop")
             force_stop = True
 
     logger.info("analysis_node", f"Tool loop ended. iteration={iteration}, total_tokens={total_tokens}, total_messages={len(messages)}, consecutive_failures={consecutive_failures}")
 
-    # Extract final response text
     result_text = ""
     for msg in reversed(messages):
         if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
@@ -476,7 +449,6 @@ You already have a base answer above from another worker. Your job is to:
             break
 
     if not result_text:
-        # Log all messages for debugging
         msg_summary = []
         for i, msg in enumerate(messages):
             msg_type = type(msg).__name__
@@ -488,7 +460,6 @@ You already have a base answer above from another worker. Your job is to:
         logger.error("analysis_node", f"No final response text found after {iteration + 1} iterations. Messages:\n" + "\n".join(msg_summary))
         result_text = "Analysis complete but no summary was generated. Please try again."
 
-    # Strip any residual SUGGESTIONS blocks the LLM may have generated
     result_text = re.sub(
         r'---?SUGGESTIONS---?.*?---?END_SUGGESTIONS---?',
         '',
@@ -497,12 +468,10 @@ You already have a base answer above from another worker. Your job is to:
     ).strip()
 
     stream.status("Preparando visualizacion de datos...")
-    # Safety net: convert any remaining markdown tables to ==CHART== blocks
     result_text = _convert_markdown_tables_to_charts(result_text)
 
     processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
 
-    # Build output
     output = WorkerOutputBuilder.tutor(
         content=result_text,
         summary="Data analysis",

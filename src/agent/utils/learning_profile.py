@@ -1,24 +1,16 @@
 """
-learning_profile.py - Consulta el perfil de aprendizaje del usuario desde Supabase.
-
-El tutor_node llama a get_learning_prompt_section() SOLO cuando necesita
-adaptar una explicación. No se inyecta en cada request.
+learning_profile.py - Fetches user learning profile from Supabase.
 """
 from typing import Dict, Optional
 from src.agent.services import get_supabase
 from src.agent.utils.logger import logger
 
-# Cache en memoria para no consultar en cada llamada
+# In-memory cache to avoid repeated DB calls
 _profile_cache: Dict[str, str] = {}
 
 
 def get_user_learning_profile(user_id: Optional[str] = None) -> str:
-    """
-    Obtiene el perfil de aprendizaje como texto descriptivo.
-    
-    Returns:
-        String descriptivo o vacío si no hay perfil.
-    """
+    """Return the user's learning profile as descriptive text, or empty string."""
     if not user_id:
         return ""
     
@@ -52,9 +44,7 @@ def get_user_learning_profile(user_id: Optional[str] = None) -> str:
 
 
 def get_learning_prompt_section(user_id: Optional[str] = None) -> str:
-    """
-    Devuelve sección de prompt lista para inyectar en el tutor.
-    """
+    """Return a prompt section for injecting into the tutor prompt."""
     profile_text = get_user_learning_profile(user_id)
     
     if not profile_text:
@@ -68,7 +58,7 @@ Adapta tu explicación a estas preferencias. No menciones que conoces su perfil.
 
 
 def clear_cache(user_id: Optional[str] = None):
-    """Limpia cache. Llamar si el usuario cambia en el sidebar."""
+    """Clear cached profile(s)."""
     if user_id:
         _profile_cache.pop(user_id, None)
     else:

@@ -1,18 +1,14 @@
 """
-shared_state.py - Registros compartidos entre api_server y agent workers.
+shared_state.py
 
-Evita imports circulares: api_server escribe aquí, los workers leen de aquí.
-NO importar api_server desde modules dentro de src/agent/.
+Shared registries between api_server and agent workers.
+Breaks circular imports: api_server writes here, workers read from here.
 """
 from typing import Dict, Any
 import threading
 
-# Robot bridge WebSocket connections: robot_id → WebSocket
-# Written by api_server on bridge connect/disconnect
-ROBOT_CONNECTIONS: Dict[str, Any] = {}
-
-# Robot metadata: robot_id → {"type": "xarm", "model": "xArm6", "capabilities": [...], "last_heartbeat": ...}
-ROBOT_METADATA: Dict[str, dict] = {}
+ROBOT_CONNECTIONS: Dict[str, Any] = {}  # robot_id -> WebSocket
+ROBOT_METADATA: Dict[str, dict] = {}    # robot_id -> metadata dict
 
 _lock = threading.Lock()
 

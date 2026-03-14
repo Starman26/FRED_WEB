@@ -1,7 +1,7 @@
 """
-network_tools.py — Agent tools for network diagnostics and shell commands.
+Agent tools for network diagnostics and shell commands.
 
-Communicates via edge_router → lab bridge → subprocess on the lab PC.
+Communicates via edge_router > lab bridge > subprocess on the lab PC.
 Commands are validated against a whitelist on the bridge side.
 """
 
@@ -12,15 +12,10 @@ from langchain_core.tools import tool
 from .edge_router import send_command, register_mock_handler
 
 
-# ═══════════════════════════════════════════════════════════════
-# Mock handlers
-# ═══════════════════════════════════════════════════════════════
-
 def _mock_ping(params: dict, device_id: str) -> dict:
     ip = params.get("ip", "192.168.1.1")
     count = params.get("count", 4)
-    # Simulate realistic ping results
-    reachable = not ip.startswith("10.99")  # 10.99.x.x = unreachable in mock
+    reachable = not ip.startswith("10.99")  # 10.99.x.x simulates unreachable
     if reachable:
         times = [round(random.uniform(0.5, 15.0), 1) for _ in range(count)]
         return {
@@ -65,10 +60,6 @@ for action, handler in {
     register_mock_handler("shell", action, handler)
 
 
-# ═══════════════════════════════════════════════════════════════
-# Agent tools
-# ═══════════════════════════════════════════════════════════════
-
 def _send(action: str, params: dict = None, device_id: str = "") -> str:
     result = send_command("shell", action, params or {}, device_id)
     return json.dumps(result, ensure_ascii=False)
@@ -106,10 +97,6 @@ def net_exec_command(command: str, timeout: int = 30) -> str:
     """
     return _send("exec_command", {"command": command, "timeout": min(timeout, 120)})
 
-
-# ═══════════════════════════════════════════════════════════════
-# Exports
-# ═══════════════════════════════════════════════════════════════
 
 NETWORK_READ_TOOLS = [net_ping]
 NETWORK_WRITE_TOOLS = [net_exec_command]

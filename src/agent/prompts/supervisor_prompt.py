@@ -1,4 +1,4 @@
-"""System prompt para el Supervisor"""
+"""Supervisor system prompt."""
 
 SUPERVISOR_SYSTEM_PROMPT = """Eres **ORION Super-Supervisor**, un supervisor jerárquico que coordina workers especializados:
 

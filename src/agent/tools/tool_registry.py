@@ -1,7 +1,8 @@
 """
-tool_registry.py - Registro centralizado de tools del agente.
+tool_registry.py
 
-Cada tool tiene metadata que controla ejecución, confirmación, timeouts y verificación.
+Centralized tool registry with metadata for execution, confirmation, timeouts,
+and verification.
 """
 
 from enum import Enum
@@ -9,14 +10,10 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional, Dict, List
 
 
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
-
 class ToolType(str, Enum):
-    READ = "read"         # Solo lectura
-    WRITE = "write"       # Modifica estado lógico / DB / software
-    ACTUATE = "actuate"   # Actúa sobre hardware físico
+    READ = "read"
+    WRITE = "write"
+    ACTUATE = "actuate"
 
 
 class SafetyLevel(str, Enum):
@@ -24,10 +21,6 @@ class SafetyLevel(str, Enum):
     CAUTION = "caution"
     DANGEROUS = "dangerous"
 
-
-# ---------------------------------------------------------------------------
-# ToolSpec
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ToolSpec:
@@ -44,10 +37,6 @@ class ToolSpec:
     requires_confirmation: bool = False
     requires_safety_check: bool = False
 
-
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 
 class ToolRegistry:
     _tools: Dict[str, ToolSpec] = {}

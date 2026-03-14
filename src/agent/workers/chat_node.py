@@ -1,14 +1,8 @@
 """
-chat_node.py - Worker para conversación general
+chat_node.py - General conversation worker.
 
-Este worker maneja:
-- Saludos y presentaciones
-- Preguntas casuales y agradecimientos
-- Ayuda general de programación (ligera a intermedia)
-- Explicaciones conceptuales y brainstorming
-- Preguntas básicas sobre el laboratorio (sin verificación en tiempo real)
-
-NO es: RAG engine, real-time diagnostics, troubleshooter, ni deep research.
+Handles greetings, casual questions, programming help, conceptual explanations.
+Not a RAG engine, diagnostics system, or deep research worker.
 """
 import os
 from typing import Dict, Any
@@ -29,10 +23,6 @@ try:
 except ImportError:
     LAB_KNOWLEDGE_AVAILABLE = False
 
-
-# ============================================
-# QUICK REPLIES — skip LLM for trivial messages
-# ============================================
 
 _QUICK_REPLIES = {
     "hola": "Hola {name}, ¿en qué te puedo ayudar?",
@@ -60,10 +50,6 @@ def _try_quick_reply(message: str, user_name: str) -> str | None:
         return template.format(name=user_name)
     return None
 
-
-# ============================================
-# SYSTEM PROMPT
-# ============================================
 
 CHAT_SYSTEM_PROMPT = """You are ORION, the conversational assistant for the FrED Factory team.
 
@@ -116,10 +102,6 @@ User name: {user_name}
 """
 
 
-# ============================================
-# HELPERS
-# ============================================
-
 def _get_lab_context() -> str:
     if not LAB_KNOWLEDGE_AVAILABLE:
         return ""
@@ -139,7 +121,7 @@ def _get_last_user_message(state: AgentState) -> str:
 
 
 def _extract_suggestions(text: str) -> tuple[str, list[str]]:
-    """Extract ---SUGGESTIONS--- block. Returns (clean_text, suggestions_list)."""
+    """Extract suggestions block from LLM output."""
     suggestions = []
     content = text
 
@@ -160,7 +142,7 @@ def _extract_suggestions(text: str) -> tuple[str, list[str]]:
 
 
 def _build_conversation_history(state, max_turns: int = 4):
-    """Build recent conversation history from state messages (excluding last user msg)."""
+    """Build recent conversation history, excluding the current user message."""
     from langchain_core.messages import HumanMessage as HM, AIMessage as AIM
 
     raw_messages = state.get("messages", []) or []
@@ -182,26 +164,17 @@ def _build_conversation_history(state, max_turns: int = 4):
                 content = content[:500] + "..." if len(content) > 500 else content
                 history.append(AIM(content=content))
 
-    # Remove last message (current user message — added separately)
     if history and isinstance(history[-1], HM):
         history = history[:-1]
 
-    # Keep only last N turns
     if len(history) > max_turns * 2:
         history = history[-(max_turns * 2):]
 
     return history
 
 
-# ============================================
-# MAIN NODE
-# ============================================
-
 def chat_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Worker de conversación general.
-    Boundary-aware: responde bien pero no finge ser diagnostics/research/troubleshooter.
-    """
+    """General conversation worker. Boundary-aware: won't pretend to be diagnostics/research."""
     start_time = datetime.utcnow()
     logger.node_start("chat_node", {})
     events = [event_execute("chat", "Processing request...")]
@@ -213,7 +186,6 @@ def chat_node(state: AgentState) -> Dict[str, Any]:
     user_name = state.get("user_name", "User")
     model_name = state.get("llm_model") or os.getenv("DEFAULT_MODEL", "gemini-2.0-flash")
 
-    # ── No message ──
     if not user_message:
         output = WorkerOutputBuilder.chat(
             content=f"Hola {user_name}, ¿en qué te puedo ayudar?",
@@ -226,7 +198,6 @@ def chat_node(state: AgentState) -> Dict[str, Any]:
             "follow_up_suggestions": [],
         }
 
-    # ── Quick reply shortcut (no LLM needed) ──
     quick = _try_quick_reply(user_message, user_name)
     if quick:
         output = WorkerOutputBuilder.chat(
@@ -245,7 +216,6 @@ def chat_node(state: AgentState) -> Dict[str, Any]:
             "token_usage": 0,
         }
 
-    # ── LLM response ──
     try:
         from src.agent.utils.llm_factory import get_llm, invoke_and_track
         llm = get_llm(state, temperature=0.4)
@@ -262,7 +232,6 @@ def chat_node(state: AgentState) -> Dict[str, Any]:
             "follow_up_suggestions": [],
         }
 
-    # Build prompt
     lab_knowledge = _get_lab_context()
     prompt = CHAT_SYSTEM_PROMPT.format(
         user_name=user_name,
@@ -270,22 +239,23 @@ def chat_node(state: AgentState) -> Dict[str, Any]:
         format_rules=MARKDOWN_FORMAT_RULES,
     )
 
-    # Inject mode instructions (code/agent/voice)
     mode_instr = get_mode_instructions(state)
     if mode_instr:
         prompt += mode_instr
 
-    # Team context
     team = state.get("team", "")
     if team:
         prompt += f"\nUser team: {team}"
 
-    # Build message chain
+    # Inject equipment spec (no skills — chat doesn't need detailed instructions)
+    spec = state.get("equipment_spec", "")
+    if spec.strip():
+        prompt += f"\n\n## Equipment Context\n\n{spec}"
+
     llm_messages = [SystemMessage(content=prompt)]
     history = _build_conversation_history(state, max_turns=4)
     llm_messages.extend(history)
 
-    # Multimodal support (images)
     image_attachments = state.get("image_attachments") or []
     if image_attachments:
         multimodal_content = [{"type": "text", "text": user_message}] + image_attachments
@@ -293,7 +263,6 @@ def chat_node(state: AgentState) -> Dict[str, Any]:
     else:
         llm_messages.append(HumanMessage(content=user_message))
 
-    # Invoke
     suggestions = []
     try:
         stream.status("Pensando...")
@@ -310,7 +279,6 @@ def chat_node(state: AgentState) -> Dict[str, Any]:
         processing_time = 0
         tokens_used = 0
 
-    # Build output
     output = WorkerOutputBuilder.chat(
         content=result_text,
         summary="General conversation",

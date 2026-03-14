@@ -1,18 +1,10 @@
 """
-rag_tools.py — Herramientas RAG unificadas para búsqueda en documentos.
-
-Combina búsqueda general + búsqueda scoped por equipo + web search (Tavily).
-
-Schema Supabase:
-- Tabla: document_chunks (id, doc_id, chunk_index, content, embedding, page_start, page_end, metadata)
-- Tabla: documents (id, source, title, doc_type, pages_total, status, metadata)
-- Tabla: equipment_documents (equipment_id, document_id)
-- RPC:   match_document_chunks(query_embedding, match_count, doc_type_filter, doc_ids)
+rag_tools.py - Unified RAG tools for document search.
 
 Factories:
-- make_retrieve_tool()              → búsqueda general en todos los documentos
-- make_equipment_manual_tool()      → búsqueda scoped a los manuales de un equipo
-- make_web_search_tool()            → fallback web via Tavily
+- make_retrieve_tool()          - general search across all documents
+- make_equipment_manual_tool()  - scoped search within equipment manuals
+- make_web_search_tool()        - web fallback via Tavily
 """
 
 import os
@@ -23,10 +15,6 @@ from langchain_core.tools import tool
 
 logger = logging.getLogger("rag_tools")
 
-
-# ═══════════════════════════════════════════════════════════════
-# Cross-language query expansion (ES → EN)
-# ═══════════════════════════════════════════════════════════════
 
 _TERM_MAP = {
     "diagnóstico": "diagnostic troubleshooting",
@@ -64,7 +52,7 @@ _TERM_MAP = {
 
 
 def _expand_query(query: str) -> str:
-    """Expande una query con términos en inglés para mejor matching cross-language."""
+    """Expand a query with English terms for cross-language matching."""
     query_lower = query.lower()
     expansions = []
     for es_term, en_terms in _TERM_MAP.items():
@@ -72,14 +60,10 @@ def _expand_query(query: str) -> str:
             expansions.append(en_terms)
     if expansions:
         expanded = f"{query} {' '.join(expansions)}"
-        logger.debug(f"Query expanded: '{query}' → '{expanded[:120]}...'")
+        logger.debug(f"Query expanded: '{query}' -> '{expanded[:120]}...'")
         return expanded
     return query
 
-
-# ═══════════════════════════════════════════════════════════════
-# Helpers compartidos
-# ═══════════════════════════════════════════════════════════════
 
 def _format_page_ref(page_start, page_end) -> str:
     if page_start and page_end:
@@ -90,15 +74,9 @@ def _format_page_ref(page_start, page_end) -> str:
 
 
 def _chunk_to_document(row: dict, doc_info: Optional[dict] = None) -> Document:
-    """Convierte un row de match_document_chunks a LangChain Document.
-
-    Args:
-        row: Row del RPC (chunk data + posible JOIN con documents).
-        doc_info: Datos del documento padre (si se hizo JOIN manual).
-    """
+    """Convert an RPC result row to a LangChain Document."""
     chunk_metadata = row.get("metadata") or {}
 
-    # Resolver título: JOIN manual > JOIN en RPC > chunk metadata > fallback
     if doc_info:
         title = doc_info.get("title") or "Documento"
         source = doc_info.get("source") or ""
@@ -132,21 +110,8 @@ def _chunk_to_document(row: dict, doc_info: Optional[dict] = None) -> Document:
     )
 
 
-# ═══════════════════════════════════════════════════════════════
-# 1. Búsqueda RAG general
-# ═══════════════════════════════════════════════════════════════
-
 def make_retrieve_tool(supabase_client: Any, embeddings_model: Any):
-    """
-    Factory: retrieve tool que busca en TODOS los documentos.
-
-    Args:
-        supabase_client: Cliente de Supabase
-        embeddings_model: Modelo de embeddings (ej: OpenAIEmbeddings)
-
-    Returns:
-        LangChain tool para búsqueda RAG general
-    """
+    """Factory: retrieve tool that searches all documents."""
 
     @tool
     def retrieve_documents(
@@ -154,16 +119,7 @@ def make_retrieve_tool(supabase_client: Any, embeddings_model: Any):
         match_count: int = 5,
         doc_type_filter: Optional[str] = None,
     ) -> Tuple[str, List[Document]]:
-        """Busca documentos relevantes en la base de conocimientos.
-
-        Args:
-            query: Consulta del usuario
-            match_count: Número de chunks a retornar (default: 5)
-            doc_type_filter: Filtro opcional por tipo de documento (ej: "paper", "manual")
-
-        Returns:
-            Tuple de (resumen textual, lista de Documents)
-        """
+        """Search for relevant documents in the knowledge base."""
         try:
             query_embedding = embeddings_model.embed_query(query)
 
@@ -208,10 +164,7 @@ def make_retrieve_tool(supabase_client: Any, embeddings_model: Any):
 
 
 def make_retrieve_tool_with_join(supabase_client: Any, embeddings_model: Any):
-    """
-    Versión alternativa que hace JOIN manual con la tabla documents
-    si la función RPC no retorna los datos del documento padre.
-    """
+    """Factory: retrieve tool with manual JOIN to documents table."""
 
     @tool
     def retrieve_documents(
@@ -219,7 +172,7 @@ def make_retrieve_tool_with_join(supabase_client: Any, embeddings_model: Any):
         match_count: int = 5,
         doc_type_filter: Optional[str] = None,
     ) -> Tuple[str, List[Document]]:
-        """Busca documentos relevantes con JOIN a tabla documents."""
+        """Search for relevant documents with JOIN to documents table."""
         try:
             query_embedding = embeddings_model.embed_query(query)
 
@@ -232,7 +185,6 @@ def make_retrieve_tool_with_join(supabase_client: Any, embeddings_model: Any):
             if not response.data:
                 return "No se encontraron documentos relevantes.", []
 
-            # JOIN manual: obtener docs padre
             doc_ids = list(set(
                 row.get("doc_id") for row in response.data if row.get("doc_id")
             ))
@@ -270,29 +222,15 @@ def make_retrieve_tool_with_join(supabase_client: Any, embeddings_model: Any):
     return retrieve_documents
 
 
-# ═══════════════════════════════════════════════════════════════
-# 2. Búsqueda RAG scoped a manuales de un equipo
-# ═══════════════════════════════════════════════════════════════
-
 def make_equipment_manual_tool(
     supabase_client: Any,
     embeddings_model: Any,
     equipment_id: str,
     doc_ids: List[str],
 ):
-    """
-    Factory: search tool scoped a los manuales de un equipo.
+    """Factory: search tool scoped to an equipment's manuals.
 
-    Usa query expansion ES→EN y threshold bajo para cross-language matching.
-
-    Args:
-        supabase_client: Supabase client instance
-        embeddings_model: Embeddings model for generating query vectors
-        equipment_id: UUID of the equipment profile
-        doc_ids: List of document IDs linked to this equipment
-
-    Returns:
-        LangChain tool que busca solo en los manuales de este equipo
+    Uses ES->EN query expansion and low threshold for cross-language matching.
     """
 
     if not doc_ids:
@@ -323,7 +261,6 @@ def make_equipment_manual_tool(
             num_results: Number of results to return (default 5)
         """
         try:
-            # ── Auto-translate non-English queries ──
             has_non_ascii = any(ord(c) > 127 for c in query)
             has_spanish_patterns = any(w in query.lower() for w in [
                 "como", "cómo", "qué", "que", "por qué", "donde", "dónde",
@@ -345,7 +282,7 @@ def make_equipment_manual_tool(
                     )])
                     translated_query = translated.content.strip().strip('"\'')
                     if translated_query and len(translated_query) > 3:
-                        logger.info(f"Query translated: '{query}' → '{translated_query}'")
+                        logger.info(f"Query translated: '{query}' -> '{translated_query}'")
                         query = translated_query
                 except Exception as te:
                     logger.warning(f"Translation failed, using original + expansion: {te}")
@@ -403,23 +340,8 @@ def make_equipment_manual_tool(
     return search_equipment_manual
 
 
-# ═══════════════════════════════════════════════════════════════
-# 3. Web Search (Tavily fallback)
-# ═══════════════════════════════════════════════════════════════
-
 def make_web_search_tool(max_results: int = 5):
-    """
-    Factory: web search tool usando Tavily API.
-
-    Se usa como fallback cuando RAG no encuentra evidencia suficiente
-    o la confianza del resultado es baja.
-
-    Args:
-        max_results: Número máximo de resultados web (default: 5)
-
-    Returns:
-        LangChain tool para búsqueda web
-    """
+    """Factory: web search tool via Tavily, used as fallback when RAG confidence is low."""
     from langchain_tavily import TavilySearch
 
     tavily_api_key = os.getenv("TAVILY_API_KEY")
@@ -434,17 +356,7 @@ def make_web_search_tool(max_results: int = 5):
 
     @tool
     def web_search(query: str) -> Tuple[str, List[Document]]:
-        """Busca información en internet usando Tavily.
-
-        Usar como respaldo cuando la base de conocimientos interna
-        no tiene evidencia suficiente.
-
-        Args:
-            query: Consulta de búsqueda
-
-        Returns:
-            Tuple de (resumen textual, lista de Documents)
-        """
+        """Search the web via Tavily as a fallback for the internal knowledge base."""
         try:
             results = tavily.invoke(query)
 
@@ -508,12 +420,8 @@ def make_web_search_tool(max_results: int = 5):
     return web_search
 
 
-# ═══════════════════════════════════════════════════════════════
-# Helper: verificar que la función RPC existe
-# ═══════════════════════════════════════════════════════════════
-
 def verify_rpc_function(supabase_client: Any) -> dict:
-    """Verifica que match_document_chunks existe y funciona."""
+    """Verify that the match_document_chunks RPC exists and works."""
     try:
         test_embedding = [0.0] * 1536  # text-embedding-3-small dimension
         response = supabase_client.rpc(

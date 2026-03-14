@@ -1,11 +1,9 @@
 """
-worker_contract.py - Contrato UNIVERSAL para comunicación entre workers y supervisor
+worker_contract.py
 
-Este módulo define el schema JSON que TODOS los workers deben cumplir.
-El supervisor SIEMPRE espera este formato para poder:
-1. Acumular evidencia entre workers
-2. Detectar cuando se necesita human-in-the-loop
-3. Encadenar workers en multi-step orchestration
+Universal contract for worker-supervisor communication.
+All workers must return WorkerOutput for the supervisor to accumulate
+evidence, detect HITL needs, and chain multi-step orchestration.
 """
 import uuid
 import json
@@ -15,7 +13,7 @@ from datetime import datetime
 
 
 class EvidenceItem(BaseModel):
-    """Un fragmento de evidencia recuperado (principalmente de RAG)"""
+    """A retrieved evidence fragment (primarily from RAG)."""
     source_id: Optional[str] = Field(default=None, description="ID del chunk/documento")
     title: str = Field(default="", description="Título del documento fuente")
     chunk: str = Field(default="", description="Contenido del fragmento")
@@ -25,7 +23,7 @@ class EvidenceItem(BaseModel):
 
 
 class ActionItem(BaseModel):
-    """Acción que el orchestrator debe considerar"""
+    """Suggested action for the orchestrator."""
     type: Literal["ask_user", "call_worker", "call_tool", "end"]
     target: Optional[str] = Field(default=None, description="Nombre del worker/tool objetivo")
     payload: Dict[str, Any] = Field(default_factory=dict, description="Datos para la acción")
@@ -34,7 +32,7 @@ class ActionItem(BaseModel):
 
 
 class ErrorItem(BaseModel):
-    """Error estructurado para debugging"""
+    """Structured error for debugging."""
     code: str = Field(description="Código del error (ej: 'RAG_NO_RESULTS')")
     message: str = Field(description="Mensaje legible del error")
     severity: Literal["warning", "error", "critical"] = Field(default="error")
@@ -43,7 +41,7 @@ class ErrorItem(BaseModel):
 
 
 class WorkerMetadata(BaseModel):
-    """Metadata común de ejecución del worker"""
+    """Execution metadata common to all workers."""
     started_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     completed_at: Optional[str] = None
     tokens_used: int = Field(default=0, description="Tokens consumidos")
@@ -53,39 +51,16 @@ class WorkerMetadata(BaseModel):
 
 
 class WorkerOutput(BaseModel):
-    """
-    Contrato UNIVERSAL para todos los workers.
-    
-    Este es el formato que TODOS los workers deben retornar.
-    El supervisor/orchestrator usa este contrato para:
-    - Decidir el siguiente paso
-    - Acumular evidencia
-    - Detectar necesidad de human-in-the-loop
-    - Renderizar respuesta final
-    
-    Campos obligatorios:
-    - worker: Nombre del worker que generó el output
-    - status: Estado del resultado
-    - content: Contenido para el usuario
-    
-    Campos opcionales pero importantes:
-    - summary: Resumen corto para el orchestrator
-    - evidence: Evidencia recuperada (para RAG)
-    - next_actions: Acciones sugeridas
-    - clarification_questions: Preguntas para human-in-the-loop
-    """
-    
-    # Identificación
+    """Universal output contract for all workers."""
+
     worker: Literal["chat", "research", "tutor", "troubleshooting", "summarizer", "robot_operator", "analysis", "practice"]
     task_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     
-    # Estado del resultado
     status: Literal["ok", "needs_context", "partial", "error"] = Field(
         default="ok",
         description="ok=completo, needs_context=falta info, partial=resultado incompleto, error=falló"
     )
     
-    # Contenido principal
     summary: str = Field(
         default="",
         description="Resumen CORTO (1-2 oraciones) para el orchestrator"
@@ -95,38 +70,31 @@ class WorkerOutput(BaseModel):
         description="Contenido COMPLETO para mostrar al usuario"
     )
     
-    # Evidencia (principalmente para research)
     evidence: List[EvidenceItem] = Field(
         default_factory=list,
         description="Fragmentos de evidencia recuperados"
     )
     
-    # Acciones sugeridas (para multi-step)
     next_actions: List[ActionItem] = Field(
         default_factory=list,
         description="Acciones que el orchestrator debería considerar"
     )
     
-    # Preguntas para human-in-the-loop
-    # Puede ser List[str] (legacy) o List[Dict] (ClarificationQuestion serializado)
     clarification_questions: List[Any] = Field(
         default_factory=list,
         description="Preguntas para el usuario si status=needs_context. Puede ser strings o ClarificationQuestion dicts"
     )
 
-    # Configuración del wizard (opcional)
     wizard_config: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Configuración del wizard interactivo (wizard_mode, max_questions, etc.)"
     )
     
-    # Errores
     errors: List[ErrorItem] = Field(
         default_factory=list,
         description="Errores ocurridos durante la ejecución"
     )
     
-    # Confianza y metadata
     confidence: float = Field(
         default=0.8,
         ge=0.0,
@@ -135,7 +103,6 @@ class WorkerOutput(BaseModel):
     )
     metadata: WorkerMetadata = Field(default_factory=WorkerMetadata)
     
-    # Datos extra para casos específicos
     extra: Dict[str, Any] = Field(
         default_factory=dict,
         description="Datos adicionales específicos del worker"
@@ -171,15 +138,11 @@ class WorkerOutput(BaseModel):
 
 
 def serialize_worker_output(output: WorkerOutput) -> str:
-    """Serializa un WorkerOutput a JSON string"""
     return output.model_dump_json(indent=2)
 
 
 def parse_worker_output(json_str: str) -> Optional[WorkerOutput]:
-    """
-    Parsea un JSON string a WorkerOutput.
-    Retorna None si el parsing falla.
-    """
+    """Parse JSON string to WorkerOutput, returns None on failure."""
     try:
         data = json.loads(json_str)
         return WorkerOutput(**data)
@@ -194,7 +157,6 @@ def create_error_output(
     error_message: str,
     debug_info: Optional[Dict] = None
 ) -> WorkerOutput:
-    """Helper para crear un output de error rápidamente"""
     return WorkerOutput(
         worker=worker,
         status="error",
@@ -219,20 +181,7 @@ def create_needs_context_output(
     wizard_mode: bool = False,
     max_questions: int = 5
 ) -> WorkerOutput:
-    """
-    Helper para crear un output que necesita más contexto del usuario.
-
-    Args:
-        worker: Nombre del worker
-        questions: Lista de strings o ClarificationQuestion (como dicts)
-        partial_content: Contenido parcial mientras se espera
-        wizard_mode: Si True, muestra preguntas una por una
-        max_questions: Máximo de preguntas a mostrar
-
-    Returns:
-        WorkerOutput con status="needs_context"
-    """
-    # Convertir ClarificationQuestion objects a dicts si es necesario
+    """Build a needs_context output with clarification questions."""
     serialized_questions = []
     for q in questions:
         if hasattr(q, "model_dump"):
@@ -268,17 +217,7 @@ def create_wizard_context_output(
     question_set_data: Dict[str, Any],
     partial_content: str = ""
 ) -> WorkerOutput:
-    """
-    Helper para crear un output con un wizard completo.
-
-    Args:
-        worker: Nombre del worker
-        question_set_data: QuestionSet serializado (usar question_set.model_dump())
-        partial_content: Contenido parcial mientras se espera
-
-    Returns:
-        WorkerOutput configurado para wizard interactivo
-    """
+    """Build a needs_context output configured for wizard interaction."""
     questions = question_set_data.get("questions", [])
     wizard_config = {
         "wizard_mode": question_set_data.get("wizard_mode", True),
@@ -302,12 +241,8 @@ def create_wizard_context_output(
     )
 
 
-# ============================================
-# Builders específicos por worker (compatibilidad)
-# ============================================
-
 class WorkerOutputBuilder:
-    """Factory para construir WorkerOutput de forma más ergonómica"""
+    """Factory helpers for building WorkerOutput per worker type."""
 
     @staticmethod
     def chat(
@@ -317,7 +252,6 @@ class WorkerOutputBuilder:
         status: str = "ok",
         **kwargs
     ) -> WorkerOutput:
-        """Construye output para chat worker"""
         return WorkerOutput(
             worker="chat",
             status=status,
@@ -337,7 +271,6 @@ class WorkerOutputBuilder:
         next_actions: List[Dict] = None,
         **kwargs
     ) -> WorkerOutput:
-        """Construye output para research worker"""
         evidence_items = []
         if evidence:
             for ev in evidence:
@@ -369,7 +302,6 @@ class WorkerOutputBuilder:
         confidence: float = 0.85,
         **kwargs
     ) -> WorkerOutput:
-        """Construye output para tutor worker"""
         extra = {
             "learning_objectives": learning_objectives or [],
             "next_steps": next_steps or [],
@@ -398,7 +330,6 @@ class WorkerOutputBuilder:
         status: str = "ok",
         **kwargs
     ) -> WorkerOutput:
-        """Construye output para troubleshooting worker"""
         extra = {
             "problem_identified": problem_identified,
             "root_cause": root_cause,
@@ -425,7 +356,6 @@ class WorkerOutputBuilder:
         summary: str = "",
         **kwargs
     ) -> WorkerOutput:
-        """Construye output para summarizer worker"""
         extra = {
             "key_points": key_points or [],
             "messages_compressed": messages_compressed,
@@ -437,7 +367,7 @@ class WorkerOutputBuilder:
             status="ok",
             summary=summary or f"Comprimidos {messages_compressed} mensajes",
             content=content,
-            confidence=1.0,  # Summarizer siempre tiene alta confianza
+            confidence=1.0,
             extra=extra,
             **kwargs
         )

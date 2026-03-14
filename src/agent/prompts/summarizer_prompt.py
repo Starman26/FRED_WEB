@@ -1,4 +1,4 @@
-"""Prompt del Summarizer"""
+"""Summarizer system prompt."""
 
 SUMMARIZER_SYSTEM_PROMPT = """You are SENTINEL's Conversational Context Compression Module.
 

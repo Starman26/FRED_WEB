@@ -1,16 +1,13 @@
 """
-web_search_tool.py - Web search tool for the troubleshooter agent.
+web_search_tool.py
 
-Uses Tavily search API (configured via TAVILY_API_KEY) to find technical
-documentation, forum posts, and troubleshooting guides from industrial
-automation sources.
+Web search via Tavily API for industrial automation troubleshooting.
 """
 import os
 from langchain_core.tools import tool
 from src.agent.utils.logger import logger
 
 
-# Dominios prioritarios para búsquedas técnicas industriales
 PRIORITY_DOMAINS = [
     "support.industry.siemens.com",
     "cache.industry.siemens.com",
@@ -47,11 +44,9 @@ def web_search_diagnostic(query: str) -> str:
         from tavily import TavilyClient
         client = TavilyClient(api_key=tavily_key)
 
-        # Agregar contexto técnico si no lo tiene
         if "siemens" not in query.lower() and "plc" not in query.lower():
             query = f"Siemens industrial automation {query}"
 
-        # Usar dominios prioritarios si la query es sobre Siemens/PLC
         use_domains = None
         if any(kw in query.lower() for kw in ["siemens", "s7", "plc", "tia"]):
             use_domains = PRIORITY_DOMAINS

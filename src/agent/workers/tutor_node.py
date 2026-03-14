@@ -1,8 +1,4 @@
-"""
-tutor_node.py - Worker especializado en tutorías y explicaciones educativas
-
-Usa WorkerOutput contract, NO retorna done=True, usa pending_context para evidencia.
-"""
+"""Tutor worker: educational explanations using WorkerOutput contract and pending_context for evidence."""
 import os
 import re
 import json
@@ -22,8 +18,7 @@ from src.agent.tools.hardware_tools.xarm_tools import (
     xarm_get_position, xarm_move_joint, xarm_move_linear, xarm_gripper,
     xarm_go_to_pose,
 )
-# Tools available for practice mode step directives (**Tool:** `name`)
-# Maps old edge_tools names → new hardware_tools xarm functions
+# Maps tool directive names to xarm functions (includes legacy edge_tools aliases)
 PRACTICE_TOOLS = {
     "simulate_robot_position": xarm_go_to_pose,
     "robot_get_position": xarm_get_position,
@@ -43,6 +38,7 @@ from src.agent.prompts.tutor_prompt import (
     MIX_TUTOR
 )
 from src.agent.prompts.format_rules import MARKDOWN_FORMAT_RULES
+from src.agent.helpers.skill_injector import build_equipment_context_block
 
 
 TUTOR_MULTISTEP_PROMPT = """Eres un **Tutor Técnico Especializado** experto en:
@@ -74,10 +70,7 @@ Nombre del usuario: {user_name}
 
 
 def _build_conversation_history(state, max_turns: int = 4):
-    """
-    Builds recent conversation history from state messages.
-    Returns list of LangChain message objects (excluding the last user message).
-    """
+    """Build recent conversation history, excluding the last user message."""
     from langchain_core.messages import HumanMessage as HM, AIMessage as AIM
     
     raw_messages = state.get("messages", []) or []
@@ -109,11 +102,7 @@ def _build_conversation_history(state, max_turns: int = 4):
 
 
 def get_last_user_message(state: AgentState) -> str:
-    """Extrae el último mensaje del usuario.
-
-    Handles both HumanMessage instances and BaseMessage objects
-    where ``.type == "human"`` (common in LangGraph checkpointed state).
-    """
+    """Extract the last user message from state."""
     for m in reversed(state.get("messages", []) or []):
         if hasattr(m, "type") and getattr(m, "type", None) == "human":
             return (getattr(m, "content", "") or "").strip()
@@ -123,7 +112,7 @@ def get_last_user_message(state: AgentState) -> str:
 
 
 def get_evidence_from_context(state: AgentState) -> tuple[str, List[EvidenceItem]]:
-    """Obtiene evidencia del pending_context"""
+    """Get evidence from pending_context or prior research worker output."""
     pending_context = state.get("pending_context", {})
     evidence_data = pending_context.get("evidence", [])
     
@@ -148,16 +137,12 @@ def get_evidence_from_context(state: AgentState) -> tuple[str, List[EvidenceItem
 
 
 def get_prior_summaries(state: AgentState) -> str:
-    """Obtiene resúmenes de workers anteriores"""
+    """Get summaries from prior workers."""
     prior_summaries = state.get("pending_context", {}).get("prior_summaries", [])
     if not prior_summaries:
         return "Sin contexto previo."
     return "\n".join([f"- **{ps.get('worker')}**: {ps.get('summary')}" for ps in prior_summaries if ps.get('summary')]) or "Sin contexto previo."
 
-
-# ============================================
-# PRACTICE MODE
-# ============================================
 
 class PracticeResponse(BaseModel):
     """Structured output schema for practice mode LLM responses."""
@@ -193,11 +178,7 @@ def _format_robot_info(robot_state: Dict[str, Any]) -> str:
 
 
 def _extract_step_instructions(md_content: str, step: int) -> str:
-    """Extract ONLY the instructions for a specific step from the practice markdown.
-
-    Accepts ``##`` or ``###``, with or without colon/dash after the title.
-    Captures until the next step header, ``AL FINALIZAR``, or end-of-string.
-    """
+    """Extract instructions for a specific step from the practice markdown."""
     import re
     pattern = rf'(^#{"{2,3}"}\s*PASO\s+{step}\s*[:\-]?\s*.*?)(?=^#{"{2,3}"}\s*PASO\s+\d+|^#{"{2,3}"}\s*AL\s+FINALIZAR|\Z)'
     match = re.search(pattern, md_content, re.DOTALL | re.IGNORECASE | re.MULTILINE)
@@ -205,19 +186,15 @@ def _extract_step_instructions(md_content: str, step: int) -> str:
 
 
 def _extract_finish_instructions(md_content: str) -> str:
-    """Extract the ``## AL FINALIZAR`` section from the practice markdown."""
+    """Extract the AL FINALIZAR section from the practice markdown."""
     import re
     match = re.search(r'(^#{2,3}\s*AL\s+FINALIZAR.*)', md_content, re.DOTALL | re.IGNORECASE | re.MULTILINE)
     return match.group(1).strip() if match else ""
 
 
 def _count_total_steps(md_content: str) -> int:
-    """Count the total number of ``## PASO N:`` headers in the markdown.
-
-    Also checks for a ``total_steps`` key in a YAML frontmatter block.
-    """
+    """Count PASO headers in markdown, or read total_steps from YAML frontmatter."""
     import re
-    # Try YAML frontmatter first
     fm = re.match(r'^---\s*\n(.*?)\n---', md_content, re.DOTALL)
     if fm:
         for line in fm.group(1).split("\n"):
@@ -226,19 +203,13 @@ def _count_total_steps(md_content: str) -> int:
                     return int(line.split(":", 1)[1].strip())
                 except ValueError:
                     pass
-    # Fall back to counting ## or ### PASO headers
     return len(re.findall(r'^#{2,3}\s*PASO\s+\d+\s*[:\-]?\s*', md_content, re.IGNORECASE | re.MULTILINE))
 
 
 
 
 def _build_practice_history(state: dict, max_pairs: int = 4) -> list:
-    """Build recent conversation history for practice mode.
-
-    Returns LangChain message objects for the last *max_pairs*
-    user+assistant exchanges.  The last HumanMessage is **excluded**
-    because the caller appends it explicitly (avoids duplication).
-    """
+    """Build recent conversation history for practice mode, excluding the last user message."""
     raw_messages = state.get("messages", []) or []
     history = []
     for msg in raw_messages:
@@ -254,10 +225,8 @@ def _build_practice_history(state: dict, max_pairs: int = 4) -> list:
                 history.append(HumanMessage(content=cnt))
             elif role in ("ai", "assistant") and cnt and cnt.strip():
                 history.append(AIMessage(content=cnt))
-    # Drop the trailing HumanMessage — caller will append it explicitly
     if history and isinstance(history[-1], HumanMessage):
         history = history[:-1]
-    # Keep only last N pairs (tail slice)
     limit = max_pairs * 2
     if len(history) > limit:
         history = history[-limit:]
@@ -265,14 +234,10 @@ def _build_practice_history(state: dict, max_pairs: int = 4) -> list:
 
 
 def _clean_tool_leaks(message: str) -> str:
-    """Remove any raw JSON or tool result that leaked into the LLM message."""
-    # Remove "RESULTADO DE LA HERRAMIENTA: {...}" patterns
+    """Remove raw JSON or tool results that leaked into the LLM message."""
     message = re.sub(r'RESULTADO DE LA HERRAMIENTA:\s*\{.*?\}', '', message, flags=re.DOTALL)
-    # Remove "DATOS DEL ROBOT..." section if leaked
     message = re.sub(r'\*\*DATOS DEL ROBOT.*?\*\*.*?(?=\n\n|\Z)', '', message, flags=re.DOTALL)
-    # Remove raw JSON blocks that look like tool output (robot_name, tcp, joints)
     message = re.sub(r'\{"robot_name".*?\}', '', message, flags=re.DOTALL)
-    # Clean up extra whitespace
     message = re.sub(r'\n{3,}', '\n\n', message).strip()
     return message
 
@@ -283,7 +248,6 @@ def _handle_practice_mode(state: dict) -> dict:
     logger.node_start("tutor_node", {"mode": "practice"})
     events = [event_execute("tutor", "Modo practica activo...")]
 
-    # Guard: if practice already completed, return completion message
     practice_status = state.get("practice_status", "in_progress")
     if practice_status == "completed":
         completion_msg = "¡Esta práctica ya fue completada! Puedes revisar la conversación o volver al inicio para elegir otra práctica."
@@ -321,7 +285,6 @@ def _handle_practice_mode(state: dict) -> dict:
     logger.info("tutor_node", f"PRACTICE DEBUG - md_content length: {len(md_content)}, step: {current_step}, total_steps: {total_steps}, interaction_mode: {state.get('interaction_mode')}, automation_id: {state.get('automation_id')}")
     logger.info("tutor_node", f"PRACTICE DEBUG - last_user_message: {user_message!r}")
 
-    # Extract focused step content instead of dumping the full markdown
     current_step_instructions = _extract_step_instructions(md_content, current_step)
     next_step_instructions = _extract_step_instructions(md_content, current_step + 1)
     finish_instructions = _extract_finish_instructions(md_content)
@@ -331,28 +294,26 @@ def _handle_practice_mode(state: dict) -> dict:
     logger.info("tutor_node", f"MD PREVIEW: {repr(md_content[:300])}")
     logger.info("tutor_node", f"STEP INSTRUCTIONS FULL: {repr(current_step_instructions[:500])}")
 
-    # Detect tool directives in step instructions (**Tool:** `name`) — supports multiple
     tool_matches = re.findall(r'\*\*Tool:\*\*\s*`(\w+)`', current_step_instructions or "")
     tool_directives = [t for t in tool_matches if t in PRACTICE_TOOLS]
 
-    # Determine if this is the first entry to this step (tools not yet executed)
     last_tool_step = state.get("last_tool_step", 0)
     is_first_tool_entry = bool(tool_directives and last_tool_step != current_step)
 
-    # Check if user is explicitly requesting a tool action (move, read, etc.)
-    _action_keywords = ["mueve", "mover", "move", "ejecuta", "run", "lee", "leer", "read", "consulta", "intenta", "otra", "retry", "reconecta", "conecta", "again", "repite", "reintenta", "hazlo", "denuevo", "de nuevo", "posicion", "posición", "estado"]
+    _action_keywords = ["mueve", "mover", "move", "ejecuta", "run", "lee", "leer", "read", "consulta", "intenta", "otra", "retry", "reconecta", "conecta", "again", "repite", "reintenta", "hazlo", "denuevo", "de nuevo", "posicion", "posición", "estado", "home", "ve", "gripper", "abre", "cierra", "open", "close", "joint", "grados", "degrees", "linear", "lineal"]
     user_requests_action = any(kw in user_message.lower() for kw in _action_keywords) if user_message else False
 
     if is_first_tool_entry:
         logger.info("tutor_node", f"TOOL DIRECTIVES FOUND (first entry): {tool_directives}")
     elif tool_directives and user_requests_action:
         logger.info("tutor_node", f"TOOL RE-ENTRY (user requested action): {tool_directives}")
+    elif tool_directives and current_step >= 2:
+        logger.info("tutor_node", f"TOOL SANDBOX: step {current_step} >= 2, allowing tools regardless")
     elif tool_directives:
         logger.info("tutor_node", f"TOOL SKIP: already executed in step {current_step}, user did not request action")
 
     if is_finished:
-        # Past last step — use finish instructions
-        step_focus = finish_instructions if finish_instructions else "(Práctica completada — felicita al alumno y haz un resumen de lo aprendido)"
+        step_focus = finish_instructions if finish_instructions else "(Práctica completada -- felicita al alumno y haz un resumen de lo aprendido)"
         step_focus_header = "## INSTRUCCIONES DE CIERRE (la práctica terminó):"
     elif current_step_instructions:
         step_focus = current_step_instructions
@@ -361,7 +322,7 @@ def _handle_practice_mode(state: dict) -> dict:
         step_focus = "(Sin instrucciones para este paso)"
         step_focus_header = f"## PASO ACTUAL: {current_step}"
 
-    # If we're on the last step, append "AL FINALIZAR" section so LLM knows how to close
+    # Append closing instructions when on last step so LLM knows how to wrap up
     if current_step >= total_steps and not is_finished:
         finalizar_match = re.search(
             r'(##\s*AL\s+FINALIZAR.*?)$',
@@ -378,7 +339,6 @@ def _handle_practice_mode(state: dict) -> dict:
     else:
         step_focus += "\n\n**⚠ No hay robot seleccionado.** Si el alumno pide ejecutar una tool del robot, dile que primero debe seleccionar un robot en el menú superior."
 
-    # Build next-step preview (gives the LLM context of where it's heading)
     next_preview = ""
     if next_step_instructions and not is_finished:
         next_preview = f"\n\n## SIGUIENTE PASO (solo como referencia, NO lo cubras todavía):\n{next_step_instructions}"
@@ -559,6 +519,34 @@ Cuando estés en el ÚLTIMO paso y el alumno responda la pregunta final:
 - NUNCA menciones la estructura interna del guion (pasos, criterios, observaciones)
 - El alumno no sabe que existe un guion — la conversación debe sentirse natural
 
+## FORMATO DE DATOS DEL ROBOT (OBLIGATORIO)
+Cuando presentes datos de posición o ángulos del robot, USA EXACTAMENTE este formato.
+No uses listas con bullets, no uses markdown bold en los valores, no cambies los labels.
+
+Coordenadas TCP:
+X: <valor> mm
+Y: <valor> mm
+Z: <valor> mm
+Roll: <valor>°
+Pitch: <valor>°
+Yaw: <valor>°
+
+Ángulos de los joints:
+Joint 1: <valor>°
+Joint 2: <valor>°
+Joint 3: <valor>°
+Joint 4: <valor>°
+Joint 5: <valor>°
+Joint 6: <valor>°
+
+REGLAS:
+- Siempre usa "Coordenadas TCP:" como header (no "TCP position", no "Posición actual")
+- Siempre usa "Ángulos de los joints:" como header (no "Joint angles", no "Ángulos articulares")
+- Un valor por línea, formato: "Label: valor unidad"
+- No uses bullets antes de los valores
+- No uses negritas (**) en los valores
+- Redondea a 2 decimales máximo
+
 ## REGLAS DE USO DE TOOLS (OBLIGATORIO)
 
 Cuando el paso actual tiene directivas **Tool:**, DEBES llamar esas tools. No hay opción.
@@ -586,7 +574,6 @@ PROHIBIDO:
             "events": events,
         }
 
-    # Build messages: system prompt + limited history (last 4 pairs) + current message
     chat_messages = [SystemMessage(content=practice_prompt)]
     chat_messages.extend(_build_practice_history(state, max_pairs=2))
     if user_message:
@@ -599,61 +586,67 @@ PROHIBIDO:
     logger.info("tutor_node", f"CHAT MESSAGES COUNT: {len(chat_messages)}, types: {[type(m).__name__ for m in chat_messages]}")
 
     structured_llm = llm.with_structured_output(PracticeResponse)
-    practice_chunks = []  # Multi-message chunks for SSE streaming
+    practice_chunks = []
 
-    # Decide execution mode:
-    # - First entry to a step with tools → bind_tools, let LLM call them
-    # - Re-entry where user explicitly requests action → bind_tools again
-    # - Re-entry conversational (no action request) → standard flow, no tools
-    # Allow tools on first entry, explicit action requests, OR simple confirmations
-    # when tools haven't been successfully executed yet
     _confirmation_words = ["si", "sí", "ok", "va", "dale", "listo", "claro", "adelante", "despejado", "despejada", "libre", "seguro", "hecho", "ya", "continua", "continúa", "start", "empezar", "empieza", "comenzar"]
     user_confirms = any(kw in user_message.lower().split() for kw in _confirmation_words) if user_message else False
 
-    use_tools = is_first_tool_entry or (tool_directives and user_requests_action) or (tool_directives and user_confirms and last_tool_step != current_step)
+    # In sandbox mode (step >= 2), always allow tool execution
+    is_sandbox = current_step >= 2
+    use_tools = is_first_tool_entry or (tool_directives and user_requests_action) or (tool_directives and user_confirms and last_tool_step != current_step) or (tool_directives and is_sandbox)
+
+    if not use_tools:
+        practice_prompt += """
+
+## IMPORTANTE: NO TIENES TOOLS EN ESTE TURNO
+NO puedes ejecutar movimientos del robot en este turno. Si el alumno pide mover el robot,
+dile que repita el comando de forma clara (ej: "mueve joint 3 a -90 grados").
+NUNCA digas "he movido" o "ejecuté" si no llamaste una tool realmente.
+"""
 
     if use_tools and tool_directives:
-        # ══════════════════════════════════════════════════════════
-        # TOOL EXECUTION FLOW: bind_tools → LLM generates calls → execute → interpret
-        # ══════════════════════════════════════════════════════════
         try:
-            # Bind ALL practice tools so LLM can use any of them
             step_tools = list(PRACTICE_TOOLS.values())
             llm_with_tools = llm.bind_tools(step_tools)
 
-            tool_chat_messages = list(chat_messages)  # copy to avoid mutation
+            tool_chat_messages = list(chat_messages)
 
-            # === PRE-PLAN: Quick chain-of-thought to decide tool usage ===
-            plan_prompt = f"""Analiza rápido y responde SOLO en JSON:
-- user_message: "{user_message}"
-- step_tools_available: {list(PRACTICE_TOOLS.keys())}
-- step_directives: {tool_directives}
+            plan_prompt = f"""Analiza el mensaje del usuario y decide qué tools llamar. Responde SOLO en JSON.
 
-¿Qué tools debes llamar y con qué args? Responde SOLO este JSON, nada más:
-{{"tools": [{{"name": "tool_name", "args": {{...}}}}], "reasoning": "1 línea"}}
+user_message: "{user_message}"
+tools_available: {list(PRACTICE_TOOLS.keys())}
 
-Si el usuario pide una acción (mover, leer, home, gripper), incluye esa tool.
-Si el paso tiene directives y es primera vez, incluye las directives.
-Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}"""
+REGLA CRÍTICA: Solo incluye tools que el usuario EXPLÍCITAMENTE pidió. Ejemplos:
+- "mueve j1 a 50" → [{{"name": "xarm_move_joint", "args": {{"joint_id": 1, "angle": 50, "speed": 15}}}}]
+- "posición del robot" → [{{"name": "xarm_get_position", "args": {{}}}}]
+- "abre el gripper" → [{{"name": "xarm_gripper", "args": {{"action": "open"}}}}]
+- "ve a home" → [{{"name": "xarm_go_to_pose", "args": {{"pose": "home"}}}}]
+- "mueve j3 a -90" → [{{"name": "xarm_move_joint", "args": {{"joint_id": 3, "angle": -90, "speed": 15}}}}]
+
+NUNCA agregues tools que el usuario no pidió. Si dice "mueve j1 a 50", NO agregues get_position ni gripper.
+
+Responde SOLO este JSON:
+{{"tools": [...], "reasoning": "1 línea"}}
+
+Si no se necesitan tools: {{"tools": [], "reasoning": "solo texto"}}"""
 
             try:
-                plan_llm = get_llm_from_name("gpt-4o-mini", temperature=0, max_tokens=200)
+                plan_llm = get_llm_from_name("gpt-4o", temperature=0, max_tokens=200)
                 plan_response = plan_llm.invoke([
                     SystemMessage(content="Eres un planner de tools. Solo responde JSON válido."),
                     HumanMessage(content=plan_prompt)
                 ])
                 plan_text = (plan_response.content or "").strip()
-                # Clean markdown fences if present
                 plan_text = plan_text.replace("```json", "").replace("```", "").strip()
                 plan_data = json.loads(plan_text)
                 planned_tools = [t["name"] for t in plan_data.get("tools", []) if t.get("name") in PRACTICE_TOOLS]
                 logger.info("tutor_node", f"PRE-PLAN: {plan_data.get('reasoning', '?')} → tools={planned_tools}")
 
-                # Inject plan into the user message so Phase 1 LLM knows what to do
                 if planned_tools:
-                    plan_matches_step = bool(set(planned_tools) & set(tool_directives))
+                    planned_fns = {PRACTICE_TOOLS.get(t) for t in planned_tools if t in PRACTICE_TOOLS}
+                    step_fns = {PRACTICE_TOOLS.get(t) for t in tool_directives if t in PRACTICE_TOOLS}
+                    plan_matches_step = bool(planned_fns & step_fns)
                     if plan_matches_step or not tool_directives:
-                        # Plan aligns with step directives OR step has no directives — proceed
                         tool_instruction = "\n\n[SYSTEM: Llama EXACTAMENTE estas tools: " + ", ".join(planned_tools)
                         for t in plan_data.get("tools", []):
                             if t.get("name") in PRACTICE_TOOLS and t.get("args"):
@@ -662,7 +655,6 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
                         tool_chat_messages[-1] = HumanMessage(content=user_message + tool_instruction)
                         use_tools = True
                     else:
-                        # User asked for something outside current step — don't execute, explain
                         logger.info("tutor_node", f"PRE-PLAN MISMATCH: planned={planned_tools} vs step={tool_directives}, blocking execution")
                         redirect_instruction = f"\n\n[SYSTEM: El usuario pidió algo que NO corresponde al paso actual. NO llames ninguna tool. Explícale amablemente que primero deben completar el paso actual y qué falta hacer. Paso actual: {current_step}]"
                         tool_chat_messages[-1] = HumanMessage(content=user_message + redirect_instruction)
@@ -670,18 +662,14 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
             except Exception as plan_err:
                 logger.warning("tutor_node", f"PRE-PLAN failed (continuing without): {plan_err}")
 
-            # === PHASE 1: LLM generates announcement + tool_calls ===
             ai_response = llm_with_tools.invoke(tool_chat_messages)
-
-            # Extract the text part as the "announcement" for SSE streaming
             announce_text = (ai_response.content or "").strip()
             if announce_text:
                 announce_text = _clean_tool_leaks(announce_text)
                 practice_chunks.append({"type": "partial", "content": announce_text})
                 logger.info("tutor_node", f"TOOL PHASE 1 (announce): {announce_text[:200]}")
 
-            # === PHASE 2: Execute tool calls the LLM made ===
-            tool_messages = [ai_response]  # Start with AIMessage that contains tool_calls
+            tool_messages = [ai_response]
             all_tool_results = []
 
             for tool_call in (ai_response.tool_calls or []):
@@ -698,7 +686,6 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
                         raise ValueError(f"Tool '{tc_name}' not in PRACTICE_TOOLS")
                     result = tool_fn.invoke(tc_args)
 
-                    # Retry logic: if result looks like an error, retry once after 3s
                     _is_error = False
                     if isinstance(result, str) and len(result) < 100 and "error" in result.lower():
                         _is_error = True
@@ -728,11 +715,9 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
 
                 practice_chunks.append({"type": "tool_status", "tool": tc_name, "status": "completed"})
 
-            # === PHASE 3: LLM interprets results (may trigger auto-continue) ===
             if all_tool_results:
                 interpret_messages = list(chat_messages) + tool_messages
 
-                # Call with tools available so LLM can request more
                 phase3_response = llm_with_tools.invoke(interpret_messages)
                 phase3_text = (phase3_response.content or "").strip()
                 logger.info("tutor_node", f"TOOL PHASE 3 (interpret): {phase3_text[:200]}")
@@ -740,7 +725,6 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
                 if phase3_text:
                     practice_chunks.append({"type": "partial", "content": _clean_tool_leaks(phase3_text)})
 
-                # ── AUTO-CONTINUE: If LLM requests more tools, execute them ──
                 max_auto_continues = 10
                 auto_continue_count = 0
 
@@ -779,13 +763,11 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
                 if auto_continue_count > 0:
                     logger.info("tutor_node", f"AUTO-CONTINUE finished after {auto_continue_count} rounds")
 
-                # Final structured response (PracticeResponse)
                 interpret_messages.append(phase3_response)
                 response = structured_llm.invoke(interpret_messages)
                 clean_content = _clean_tool_leaks(response.message)
                 practice_chunks.append({"type": "response", "content": clean_content})
             else:
-                # LLM had tools available but chose not to call any
                 logger.info("tutor_node", "TOOL PHASE 3: LLM chose not to call tools, using standard flow")
                 response = structured_llm.invoke(chat_messages)
                 clean_content = _clean_tool_leaks(response.message)
@@ -803,11 +785,8 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
                     "events": events,
                 }
             response = PracticeResponse(message=clean_content, step_completed=False, new_step=current_step)
-            practice_chunks = []  # Clear partial chunks on failure
+            practice_chunks = []
     else:
-        # ══════════════════════════════════════════════════════════
-        # STANDARD FLOW: single LLM call (no tool)
-        # ══════════════════════════════════════════════════════════
         try:
             response = structured_llm.invoke(chat_messages)
             clean_content = _clean_tool_leaks(response.message)
@@ -824,7 +803,7 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
                 }
             response = PracticeResponse(message=clean_content, step_completed=False, new_step=current_step)
 
-    # ── Deterministic step management (don't trust LLM's new_step) ──
+    # Deterministic step management (don't trust LLM's new_step)
     if current_step >= total_steps and response.step_completed:
         practice_completed = True
         save_step = total_steps
@@ -849,7 +828,6 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
     completed_flag = " COMPLETED" if practice_update.get("practice_completed") else ""
     events.append(event_report("tutor", f"Practica step {validated_step}/{total_steps} ({processing_time:.0f}ms){completed_flag}"))
 
-    # ── Persist progress to Supabase ──
     automation_id = state.get("automation_id")
     auth_user_id = state.get("auth_user_id") or state.get("user_id")
     if automation_id and auth_user_id:
@@ -867,7 +845,6 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
 
                 observation = practice_update.get("observation", "")
                 if observation:
-                    # Append to existing observations instead of overwriting
                     existing_observations = state.get("automation_context", [])
                     if isinstance(existing_observations, str):
                         try:
@@ -908,7 +885,6 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
 
     logger.node_end("tutor_node", {"mode": "practice", "step": validated_step, "completed": practice_update.get("practice_completed", False)})
 
-    # Build accumulated observations for state persistence
     existing_observations = state.get("automation_context", [])
     if isinstance(existing_observations, str):
         try:
@@ -931,20 +907,14 @@ Si no se necesitan tools, responde: {{"tools": [], "reasoning": "solo texto"}}""
         "automation_step": validated_step,
         "automation_context": json.dumps(existing_observations),
     }
-    # Always write practice_chunks to clear stale state from previous invocations
     result["practice_chunks"] = practice_chunks
     if practice_chunks:
         result["last_tool_step"] = current_step
     return result
 
 
-# ============================================
-# STANDARD TUTOR
-# ============================================
-
 def tutor_node(state: AgentState) -> Dict[str, Any]:
     """Worker tutor que genera contenido educativo."""
-    # Practice mode branch
     if state.get("interaction_mode", "").lower() == "practice":
         return _handle_practice_mode(state)
 
@@ -975,7 +945,6 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
         error_output = create_error_output("tutor", "LLM_INIT_ERROR", f"Error inicializando modelo: {str(e)}")
         return {"worker_outputs": [error_output.model_dump()], "tutor_result": error_output.model_dump_json(), "events": events}
     
-    # Obtener learning profile de la DB (solo cuando el tutor necesita explicar)
     try:
         from src.agent.utils.learning_profile import get_learning_prompt_section
         user_id = state.get("user_id")
@@ -990,11 +959,15 @@ def tutor_node(state: AgentState) -> Dict[str, Any]:
         format_rules=MARKDOWN_FORMAT_RULES,
         user_name=state.get("user_name", "Usuario"),
     )
-    
+
+    # Inject equipment spec + teach/operate skills
+    eq_context = build_equipment_context_block(state, categories=["operate", "teach"])
+    if eq_context:
+        prompt = eq_context + "\n\n" + prompt
+
     messages = [SystemMessage(content=prompt)]
     if rolling_summary := state.get("rolling_summary", ""):
         messages.append(SystemMessage(content=f"Contexto de la conversación:\n{rolling_summary}"))
-    # Add recent conversation history for context continuity
     history = _build_conversation_history(state, max_turns=4)
     messages.extend(history)
     messages.append(HumanMessage(content=user_message))

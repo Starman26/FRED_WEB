@@ -1,5 +1,5 @@
 """
-logger.py - Logger estructurado para el sistema multi-agente
+logger.py - Structured logger for the multi-agent system.
 """
 import os
 from datetime import datetime
@@ -7,7 +7,7 @@ from typing import Dict, Optional
 
 
 class AgentLogger:
-    """Logger estructurado para nodos del grafo"""
+    """Structured logger for graph nodes."""
 
     def __init__(self, level: str = "INFO"):
         self.level = (level or "INFO").upper()

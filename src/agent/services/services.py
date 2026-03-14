@@ -1,29 +1,16 @@
 """
-services.py - Servicios singleton (no serializables)
-
-Este módulo mantiene instancias de clientes que NO deben guardarse en el state
-porque no son serializables (Supabase, Embeddings, etc.)
-
-Uso:
-    from src.agent.services import get_supabase, get_embeddings
-    
-    supabase = get_supabase()
-    embeddings = get_embeddings()
+services.py - Singleton clients (not serializable, must not be stored in state).
 """
 import os
 from typing import Optional, Any
 
-# Singletons
 _supabase_client: Optional[Any] = None
 _embeddings_model: Optional[Any] = None
 _initialized: bool = False
 
 
 def get_supabase() -> Optional[Any]:
-    """
-    Obtiene el cliente de Supabase (singleton).
-    Se inicializa lazy en la primera llamada.
-    """
+    """Get or initialize the Supabase client singleton."""
     global _supabase_client
     
     if _supabase_client is None:
@@ -50,10 +37,7 @@ def get_supabase() -> Optional[Any]:
 
 
 def get_embeddings() -> Optional[Any]:
-    """
-    Obtiene el modelo de embeddings (singleton).
-    Se inicializa lazy en la primera llamada.
-    """
+    """Get or initialize the embeddings model singleton."""
     global _embeddings_model
     
     if _embeddings_model is None:
@@ -73,10 +57,7 @@ def get_embeddings() -> Optional[Any]:
 
 
 def init_services() -> dict:
-    """
-    Inicializa todos los servicios y retorna su estado.
-    Útil para verificar conexiones al inicio.
-    """
+    """Initialize all services and return their status."""
     global _initialized
     
     supabase = get_supabase()
@@ -91,7 +72,7 @@ def init_services() -> dict:
 
 
 def get_services_status() -> dict:
-    """Retorna el estado actual de los servicios."""
+    """Return current service status."""
     return {
         "supabase_connected": _supabase_client is not None,
         "embeddings_ready": _embeddings_model is not None,
@@ -100,9 +81,7 @@ def get_services_status() -> dict:
 
 
 def reset_services():
-    """
-    Resetea los servicios (útil para testing).
-    """
+    """Reset all service singletons (for testing)."""
     global _supabase_client, _embeddings_model, _initialized
     _supabase_client = None
     _embeddings_model = None

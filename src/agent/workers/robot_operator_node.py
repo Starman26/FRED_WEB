@@ -1,8 +1,7 @@
 """
-robot_operator_node.py - Worker para control de dispositivos (xArm, ABB, PLC, network)
+robot_operator_node.py - Device control worker (xArm, ABB, PLC, network).
 
-Usa tool-calling nativo de LangChain: el LLM decide qué herramientas invocar.
-La comunicación va por edge_router → lab_bridge.
+Uses native LangChain tool-calling. Communication goes through edge_router to lab_bridge.
 """
 import os
 from typing import Dict, Any, Tuple
@@ -13,13 +12,11 @@ from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AI
 from src.agent.utils.llm_factory import get_llm
 
 from src.agent.state import AgentState
+from src.agent.helpers.skill_injector import build_equipment_context_block
 from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report, event_error
 
 
-# ============================================
-# TOOLS
-# ============================================
 try:
     from src.agent.tools.hardware_tools import (
         XARM_TOOLS,
@@ -36,14 +33,8 @@ except ImportError:
     TOOLS_AVAILABLE = False
 
 
-# ============================================
-# TOOL SELECTOR
-# ============================================
-
 def _select_operator_tools(equipment_type: str = "", equipment_brand: str = "") -> Tuple[list, str]:
-    """Select actuate + read tools based on equipment type.
-    Returns (tools_list, device_label) for the prompt.
-    """
+    """Select tools based on equipment type. Returns (tools_list, device_label)."""
     hint = f"{equipment_type} {equipment_brand}".lower()
 
     if any(kw in hint for kw in ["xarm", "ufactory", "lite"]):
@@ -57,10 +48,6 @@ def _select_operator_tools(equipment_type: str = "", equipment_brand: str = "") 
     else:
         return XARM_TOOLS + ABB_TOOLS + PLC_WRITE_TOOLS + NETWORK_TOOLS, "Device"
 
-
-# ============================================
-# PROMPT
-# ============================================
 
 ROBOT_OPERATOR_PROMPT = """You are the device operator for the FrED Factory lab.
 You control a {device_label} using the tools provided.
@@ -86,10 +73,6 @@ RESPONSE STYLE:
 Context: {intent_context}"""
 
 
-# ============================================
-# HELPERS
-# ============================================
-
 def _get_last_user_message(state: AgentState) -> str:
     for msg in reversed(state.get("messages", [])):
         if isinstance(msg, HumanMessage):
@@ -102,7 +85,7 @@ def _get_last_user_message(state: AgentState) -> str:
 def _make_output(content: str, summary: str, status: str = "ok",
                  actions_taken: list = None, model_used: str = "",
                  processing_time_ms: float = 0, confidence: float = 0.9) -> Dict[str, Any]:
-    """Construye un worker output como dict (compatible con WorkerOutput)."""
+    """Build a worker output dict compatible with WorkerOutput."""
     return {
         "worker": "robot_operator",
         "status": status,
@@ -121,12 +104,8 @@ def _make_output(content: str, summary: str, status: str = "ok",
     }
 
 
-# ============================================
-# MAIN NODE
-# ============================================
-
 def robot_operator_node(state: AgentState) -> Dict[str, Any]:
-    """Worker para control de dispositivos via tool-calling del LLM."""
+    """Device control worker using LLM tool-calling."""
     start_time = datetime.utcnow()
     logger.node_start("robot_operator", {})
     events = [event_execute("robot_operator", "Procesando comando de dispositivo...")]
@@ -142,9 +121,6 @@ def robot_operator_node(state: AgentState) -> Dict[str, Any]:
         f"Entities: {intent_analysis.get('entities', {})}"
     )
 
-    # ==========================================
-    # SELECT TOOLS BASED ON EQUIPMENT
-    # ==========================================
     pending = state.get("pending_context", {}) or {}
     eq_type = pending.get("equipment_type", "")
     eq_brand = pending.get("equipment_brand", "")
@@ -168,9 +144,6 @@ def robot_operator_node(state: AgentState) -> Dict[str, Any]:
 
     logger.info("robot_operator", f"Selected {len(selected_tools)} tools for {device_label} (type={eq_type}, brand={eq_brand})")
 
-    # ==========================================
-    # CONFIGURAR LLM CON TOOLS
-    # ==========================================
     try:
         llm = get_llm(state, temperature=0.1)
 
@@ -186,15 +159,18 @@ def robot_operator_node(state: AgentState) -> Dict[str, Any]:
             "events": events + [event_error("robot_operator", str(e))],
         }
 
-    # ==========================================
-    # TOOL-CALLING LOOP
-    # ==========================================
     tool_list = "\n".join(f"- {t.name}: {t.description.split(chr(10))[0]}" for t in selected_tools)
     prompt = ROBOT_OPERATOR_PROMPT.format(
         device_label=device_label,
         tool_list=tool_list,
         intent_context=intent_context,
     )
+
+    # Inject equipment spec + operate skills
+    eq_context = build_equipment_context_block(state, categories=["operate"])
+    if eq_context:
+        prompt = eq_context + "\n\n" + prompt
+
     messages = [
         SystemMessage(content=prompt),
         HumanMessage(content=user_message)
@@ -244,9 +220,6 @@ def robot_operator_node(state: AgentState) -> Dict[str, Any]:
             ))
             break
 
-    # ==========================================
-    # CONSTRUIR RESPUESTA
-    # ==========================================
     final_text = ""
     if response and hasattr(response, 'content') and response.content:
         final_text = response.content

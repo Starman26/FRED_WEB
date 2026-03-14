@@ -1,17 +1,9 @@
 """
-practice_worker.py - Practice worker con Bridge-in-the-Loop (BITL).
+practice_worker.py
 
-Guía a un estudiante paso a paso por una rutina de automatización.
-El grafo se interrumpe con interrupt() esperando que un bridge físico
-(Lab PC) reporte el estado del robot después de cada acción del estudiante.
-
-Flujo:
-1. Primera invocación: parsear rutina, notificar bridge, emitir instrucción paso 0, interrupt()
-2. Invocaciones siguientes: evaluar paso con device_comparator, generar feedback,
-   avanzar al siguiente paso o finalizar.
-
-LangGraph re-ejecuta el nodo completo después de cada Command(resume=...).
-El worker usa current_practice_step del state para saber en qué paso va.
+Bridge-in-the-Loop (BITL) practice worker. Guides students step-by-step
+through automation routines, interrupting for bridge reports after each action.
+LangGraph re-executes the node on each Command(resume=...).
 """
 import json
 import asyncio
@@ -26,29 +18,18 @@ from src.agent.utils.logger import logger
 from src.agent.utils.run_events import event_execute, event_report, event_narration
 
 
-# ============================================
-# MAIN NODE
-# ============================================
-
 def practice_worker_node(state: AgentState) -> dict:
-    """
-    Practice worker con Bridge-in-the-Loop.
-
-    Se ejecuta múltiples veces (una por cada resume del bridge).
-    Usa current_practice_step para saber en qué paso va.
-    """
+    """Practice worker with BITL. Runs once per bridge resume."""
     logger.node_start("practice", {"step": state.get("current_practice_step", 0)})
 
-    # --- Primera invocación: setup ---
     if not state.get("practice_session_active"):
         return _handle_setup(state)
 
-    # --- Invocaciones siguientes: evaluar paso y continuar ---
     return _handle_step_evaluation(state)
 
 
 def _handle_setup(state: AgentState) -> dict:
-    """Primera invocación: parsear rutina, notificar bridge, emitir primera instrucción."""
+    """First invocation: parse routine, notify bridge, emit first instruction."""
     steps = parse_automation_steps(
         state.get("automation_md_content", ""),
         state.get("automation_id", ""),
@@ -64,7 +45,6 @@ def _handle_setup(state: AgentState) -> dict:
 
     robot_id = determine_target_robot(state)
 
-    # Notificar bridge: practice_start
     notify_bridge(robot_id, {
         "type": "practice_start",
         "session_id": state.get("_stream_session_id", ""),
@@ -73,13 +53,11 @@ def _handle_setup(state: AgentState) -> dict:
         "total_steps": len(steps),
     })
 
-    # Emitir primera instrucción via stream callback
     first_step = steps[0]
     _emit_instruction(state, first_step, 0, len(steps))
 
     logger.info("practice", f"Practice session started: {len(steps)} steps, robot={robot_id}")
 
-    # Guardar estado y hacer interrupt esperando bridge
     interrupt_value = interrupt({
         "type": "awaiting_bridge",
         "step_index": 0,
@@ -89,10 +67,6 @@ def _handle_setup(state: AgentState) -> dict:
         "timeout_seconds": first_step.get("timeout", 120),
     })
 
-    # Después del resume: el state ya tiene bridge_report y practice_session_active=True
-    # LangGraph re-ejecuta el nodo, pero ahora practice_session_active es True
-    # así que caerá en _handle_step_evaluation.
-    # Este return solo se alcanza si interrupt retorna (resume).
     return {
         "practice_session_active": True,
         "current_practice_step": 0,
@@ -105,7 +79,7 @@ def _handle_setup(state: AgentState) -> dict:
 
 
 def _handle_step_evaluation(state: AgentState) -> dict:
-    """Evaluar paso actual con bridge_report y avanzar o finalizar."""
+    """Evaluate current step against bridge_report, then advance or finish."""
     bridge_data = state.get("bridge_report")
     if not bridge_data:
         logger.warning("practice", "No bridge report received")
@@ -130,10 +104,8 @@ def _handle_step_evaluation(state: AgentState) -> dict:
     expected = step_data.get("expected", {})
     tolerance = step_data.get("tolerance", {})
 
-    # Comparar resultado real vs esperado
     evaluation = compare_device(device_type, bridge_data.get("action_result", {}), expected, tolerance)
 
-    # Generar feedback con LLM
     feedback = _generate_feedback(
         step=step_data,
         evaluation=evaluation,
@@ -143,7 +115,6 @@ def _handle_step_evaluation(state: AgentState) -> dict:
         state=state,
     )
 
-    # Guardar resultado del paso
     step_result = {
         "step": current_step,
         "passed": evaluation["passed"],
@@ -154,23 +125,18 @@ def _handle_step_evaluation(state: AgentState) -> dict:
     }
     practice_results = list(state.get("practice_results", [])) + [step_result]
 
-    # Emitir evaluación via stream callback
     _emit_step_evaluation(state, step_result)
 
     logger.info("practice", f"Step {current_step} evaluated: passed={evaluation['passed']}, score={evaluation['score']}")
 
-    # Siguiente paso o fin?
     next_step = current_step + 1
 
     if next_step >= len(steps):
-        # --- Fin de la practice session ---
         return _handle_session_complete(state, steps, practice_results, robot_id)
 
-    # --- Siguiente paso: emitir instrucción e interrupt ---
     next_step_data = steps[next_step]
     _emit_instruction(state, next_step_data, next_step, len(steps))
 
-    # Notificar bridge del nuevo paso
     notify_bridge(robot_id, {
         "type": "practice_step",
         "session_id": state.get("_stream_session_id", ""),
@@ -178,7 +144,6 @@ def _handle_step_evaluation(state: AgentState) -> dict:
         "expected": next_step_data.get("expected", {}),
     })
 
-    # Interrupt esperando bridge para el siguiente paso
     interrupt_value = interrupt({
         "type": "awaiting_bridge",
         "step_index": next_step,
@@ -200,7 +165,7 @@ def _handle_step_evaluation(state: AgentState) -> dict:
 
 
 def _handle_session_complete(state: dict, steps: list, practice_results: list, robot_id: str) -> dict:
-    """Genera resumen final y cierra la practice session."""
+    """Generate final summary and close the practice session."""
     summary = generate_practice_summary(steps, practice_results, state)
 
     notify_bridge(robot_id, {
@@ -227,43 +192,13 @@ def _handle_session_complete(state: dict, steps: list, practice_results: list, r
     }
 
 
-# ============================================
-# HELPER FUNCTIONS
-# ============================================
-
 def parse_automation_steps(md_content: str, automation_id: str) -> list:
-    """
-    Parsea los pasos de una rutina desde markdown.
-
-    Busca bloques con formato:
-        ### Paso N: Descripción
-        **Esperado:** JSON con target_position, target_joints, etc.
-        **Tolerancia:** JSON con position_mm, joint_deg, etc.
-        **Timeout:** 120
-        **Hints:** hint1, hint2
-
-    Fuente alternativa: fetch desde Supabase si md_content está vacío.
-
-    Retorna lista de dicts:
-    [
-        {
-            "step_index": 0,
-            "description": "Mueve el robot a la posición home",
-            "expected": {...},
-            "tolerance": {...},
-            "timeout": 120,
-            "hints": ["..."],
-            "max_retries": 2,
-        },
-    ]
-    """
+    """Parse steps from markdown or fetch from Supabase as fallback."""
     steps = []
 
-    # Intentar parsear desde markdown
     if md_content:
         steps = _parse_steps_from_markdown(md_content)
 
-    # Fallback: intentar desde Supabase
     if not steps and automation_id:
         steps = _fetch_steps_from_supabase(automation_id)
 
@@ -271,11 +206,10 @@ def parse_automation_steps(md_content: str, automation_id: str) -> list:
 
 
 def _parse_steps_from_markdown(md_content: str) -> list:
-    """Parsea pasos desde contenido markdown de automatización."""
+    """Parse step blocks (### Paso N / ### Step N) from markdown."""
     import re
 
     steps = []
-    # Buscar bloques de pasos: ### Paso N o ### Step N
     step_pattern = re.compile(
         r"###\s+(?:Paso|Step)\s+(\d+)[:\s]*(.+?)(?=\n###\s+(?:Paso|Step)\s+\d+|\Z)",
         re.DOTALL | re.IGNORECASE,
@@ -296,7 +230,6 @@ def _parse_steps_from_markdown(md_content: str) -> list:
             "max_retries": 2,
         }
 
-        # Extraer JSON de expected
         expected_match = re.search(r"\*\*(?:Esperado|Expected)[:\s]*\*\*\s*```json\s*(.+?)```", block, re.DOTALL)
         if expected_match:
             try:
@@ -304,7 +237,6 @@ def _parse_steps_from_markdown(md_content: str) -> list:
             except json.JSONDecodeError:
                 pass
 
-        # Extraer tolerancia
         tol_match = re.search(r"\*\*(?:Tolerancia|Tolerance)[:\s]*\*\*\s*```json\s*(.+?)```", block, re.DOTALL)
         if tol_match:
             try:
@@ -312,12 +244,10 @@ def _parse_steps_from_markdown(md_content: str) -> list:
             except json.JSONDecodeError:
                 pass
 
-        # Extraer timeout
         timeout_match = re.search(r"\*\*Timeout[:\s]*\*\*\s*(\d+)", block)
         if timeout_match:
             step["timeout"] = int(timeout_match.group(1))
 
-        # Extraer hints
         hints_match = re.search(r"\*\*(?:Hints|Pistas)[:\s]*\*\*\s*(.+?)(?:\n\*\*|\Z)", block, re.DOTALL)
         if hints_match:
             hints_text = hints_match.group(1).strip()
@@ -325,7 +255,6 @@ def _parse_steps_from_markdown(md_content: str) -> list:
 
         steps.append(step)
 
-    # Ordenar por step_index
     steps.sort(key=lambda s: s["step_index"])
     return steps
 
@@ -353,18 +282,15 @@ def _fetch_steps_from_supabase(automation_id: str) -> list:
 
 
 def determine_target_robot(state: dict) -> str:
-    """Determina qué robot usar para la practice session."""
-    # 1. Si robot_ids está especificado, usar el primero
+    """Pick target robot: explicit robot_ids > single connected > first available."""
     robot_ids = state.get("robot_ids", [])
     if robot_ids:
         return robot_ids[0]
 
-    # 2. Si solo hay un robot conectado, usar ese
     from src.agent.shared_state import ROBOT_CONNECTIONS
     if len(ROBOT_CONNECTIONS) == 1:
         return list(ROBOT_CONNECTIONS.keys())[0]
 
-    # 3. Si hay múltiples robots, usar el primero disponible
     if ROBOT_CONNECTIONS:
         return list(ROBOT_CONNECTIONS.keys())[0]
 
@@ -372,7 +298,7 @@ def determine_target_robot(state: dict) -> str:
 
 
 def _emit_instruction(state: dict, step: dict, step_index: int, total_steps: int):
-    """Emite la instrucción del paso al estudiante vía stream callback."""
+    """Emit step instruction to student via stream callback."""
     session_id = state.get("_stream_session_id", "")
     if not session_id:
         return
@@ -392,7 +318,7 @@ def _emit_instruction(state: dict, step: dict, step_index: int, total_steps: int
 
 
 def _emit_step_evaluation(state: dict, result: dict):
-    """Emite el resultado de la evaluación vía stream callback."""
+    """Emit evaluation result via stream callback."""
     session_id = state.get("_stream_session_id", "")
     if not session_id:
         return
@@ -416,12 +342,7 @@ def _generate_feedback(
     total_steps: int,
     state: dict,
 ) -> str:
-    """
-    Genera feedback personalizado usando el LLM.
-
-    El LLM recibe el contexto del paso, la evaluación numérica,
-    y genera un mensaje motivacional y educativo en español.
-    """
+    """Generate personalized feedback via LLM, with static fallback."""
     try:
         from src.agent.utils.llm_factory import get_llm
 
@@ -459,24 +380,11 @@ Genera un feedback breve (2-3 oraciones) para el estudiante:
 
 
 def generate_practice_summary(steps: list, results: list, state: dict = None) -> dict:
-    """
-    Genera resumen final de la practice session.
-
-    Retorna:
-    {
-        "total_steps": N,
-        "passed": M,
-        "failed": K,
-        "overall_score": 0.875,
-        "step_results": [...],
-        "narrative": "Completaste M de N pasos correctamente...",
-    }
-    """
+    """Generate final practice session summary with narrative."""
     passed = sum(1 for r in results if r.get("passed"))
     failed = len(results) - passed
     avg_score = sum(r.get("score", 0) for r in results) / len(results) if results else 0
 
-    # Intentar generar narrative con LLM
     narrative = _generate_summary_narrative(steps, results, passed, failed, avg_score, state)
 
     return {
@@ -492,7 +400,7 @@ def generate_practice_summary(steps: list, results: list, state: dict = None) ->
 def _generate_summary_narrative(
     steps: list, results: list, passed: int, failed: int, avg_score: float, state: dict = None
 ) -> str:
-    """Genera el narrative del resumen, con LLM si es posible."""
+    """Generate summary narrative via LLM, with static fallback."""
     try:
         if state:
             from src.agent.utils.llm_factory import get_llm
@@ -524,7 +432,6 @@ Genera un resumen motivacional (3-5 oraciones):
     except Exception as e:
         logger.warning("practice", f"LLM summary failed: {e}")
 
-    # Fallback sin LLM
     narrative = f"Completaste {passed} de {len(steps)} pasos correctamente (score: {avg_score:.0%})."
     if failed > 0:
         failed_steps = [r for r in results if not r.get("passed")]
@@ -533,12 +440,7 @@ Genera un resumen motivacional (3-5 oraciones):
 
 
 def notify_bridge(robot_id: str, message: dict):
-    """
-    Enviar mensaje al bridge.
-
-    Usa asyncio.run_coroutine_threadsafe para llamar la función async
-    desde el thread sync de LangGraph.
-    """
+    """Send message to bridge. Uses run_coroutine_threadsafe from LangGraph's sync thread."""
     try:
         from src.agent.shared_state import ROBOT_CONNECTIONS
         ws = ROBOT_CONNECTIONS.get(robot_id)
@@ -546,7 +448,6 @@ def notify_bridge(robot_id: str, message: dict):
             logger.debug("practice", f"Cannot notify bridge: {robot_id} not connected")
             return
 
-        # Intentar obtener el event loop del servidor
         try:
             from src.api_server import get_main_loop
             loop = get_main_loop()

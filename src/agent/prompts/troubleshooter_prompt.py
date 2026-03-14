@@ -1,6 +1,5 @@
-"""Prompt del Troubleshooter con contexto del laboratorio FrED Factory"""
+"""Troubleshooter system prompt for FrED Factory."""
 
-# Importar contexto del lab
 try:
     from src.agent.context import FULL_LAB_CONTEXT
 except ImportError:
@@ -61,7 +60,6 @@ Always end your response with exactly 3 follow-up suggestions:
 ---END_SUGGESTIONS---
 """
 
-# Template que incluye el contexto del laboratorio
 TROUBLESHOOTER_PROMPT = """Eres un **Experto en Diagnóstico Técnico** de la FrED Factory.
 
 ## CONTEXTO DEL LABORATORIO
@@ -86,7 +84,6 @@ Responde de forma conversacional pero técnica. Si detectas un problema crítico
 indícalo claramente.
 """
 
-# Contexto resumido para inyectar (versión corta para no usar muchos tokens)
 LAB_CONTEXT_SHORT = """
 **FrED Factory** - Laboratorio de manufactura del Tecnológico de Monterrey/MIT
 
@@ -112,7 +109,6 @@ def get_troubleshooter_prompt(
     evidence_section: str = "",
     user_name: str = "Usuario"
 ) -> str:
-    """Genera el prompt del troubleshooter con contexto"""
     return TROUBLESHOOTER_PROMPT.format(
         lab_context=lab_context or LAB_CONTEXT_SHORT,
         clarification_section=clarification_section or "No hay información adicional.",

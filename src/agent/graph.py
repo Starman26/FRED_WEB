@@ -1,13 +1,7 @@
 """
-graph.py - Definición del grafo principal con orchestration multi-step
+graph.py - Main orchestration graph.
 
-ARQUITECTURA:
-START → bootstrap → planner → [worker₁ → route → worker₂ → ...] → synthesize → END
-                                        ↓
-                                   human_input (si necesita clarificación)
-
-El planner fusiona intent analysis + plan generation en un solo nodo.
-El adaptive_router evalúa outputs de workers y adapta el plan dinámicamente.
+START -> bootstrap -> planner -> [worker -> route -> ...] -> synthesize -> END
 """
 import logging
 from enum import StrEnum
@@ -30,9 +24,7 @@ from src.agent.workers.analysis_node import analysis_node
 
 _log = logging.getLogger("graph")
 
-# Practice worker: try real import, fall back to placeholder.
-# The placeholder MUST be assigned so WORKER_REGISTRY always contains it
-# and workflow.add_node("practice", fn) succeeds during graph construction.
+# Practice worker: fall back to placeholder if import fails
 _practice_available = False
 try:
     from src.agent.nodes.practice_worker import practice_worker_node
@@ -50,19 +42,14 @@ if not _practice_available:
         }
 
 
-# ============================================
-# NODE & DESTINATION CONSTANTS
-# ============================================
-
 class Node(StrEnum):
-    """All graph node names. Single source of truth — no magic strings."""
+    """All graph node names. Single source of truth."""
     BOOTSTRAP = "bootstrap"
     PLANNER = "planner"
     ROUTE = "route"
     SYNTHESIZE = "synthesize"
     HUMAN_INPUT = "human_input"
     VERIFY_INFO = "verify_info"
-    # Workers
     CHAT = "chat"
     RESEARCH = "research"
     TUTOR = "tutor"
@@ -73,8 +60,7 @@ class Node(StrEnum):
     PRACTICE = "practice"
 
 
-# Worker registry: name → node function
-# Adding a new worker = one line here + import above
+# Worker registry: add new workers here + import above
 WORKER_REGISTRY = {
     Node.CHAT: chat_node,
     Node.RESEARCH: research_node,
@@ -86,22 +72,16 @@ WORKER_REGISTRY = {
     Node.PRACTICE: practice_worker_node,
 }
 
-# Sets for validation
 CORE_WORKERS = {Node.CHAT, Node.RESEARCH, Node.TUTOR, Node.TROUBLESHOOTING,
                 Node.SUMMARIZER, Node.ROBOT_OPERATOR, Node.ANALYSIS}
 SPECIAL_WORKERS = {Node.PRACTICE}
 VALID_WORKERS = CORE_WORKERS | SPECIAL_WORKERS
 
-# All known node names (for external consumers like api_server._ALL_NODES)
 ALL_NODES = {n.value for n in Node}
 
 
-# ============================================
-# ROUTING HELPERS
-# ============================================
-
 def _normalize_destination(next_node: str, allowed: set[str], fallback: str) -> str:
-    """Validate and normalize a graph destination. Shared by all route functions."""
+    """Validate and normalize a graph destination."""
     if next_node in allowed:
         return next_node
     if next_node in ("END", "__end__", "end"):
@@ -118,14 +98,14 @@ def route_after_bootstrap(state: AgentState) -> str:
 
 
 def route_after_verify(state: AgentState) -> str:
-    """Route after verify_info node based on verification outcome."""
+    """Route based on verification outcome."""
     status = state.get("verification_status", "unknown")
 
     if status == "verified" or state.get("customer_id"):
         return Node.PLANNER
     if status == "needs_human_input" or state.get("needs_human_input"):
         return Node.HUMAN_INPUT
-    # failed or unknown — proceed to planner with whatever we have
+    # failed or unknown: proceed with whatever we have
     return Node.PLANNER
 
 
@@ -149,13 +129,12 @@ def route_after_human_input(state: AgentState) -> str:
     """Route after human_input based on why the input was requested."""
     reason = state.get("human_input_reason", "")
 
-    # Explicit reason takes priority
     if reason == "verification":
         return Node.VERIFY_INFO
     if reason == "worker_clarification" and state.get("orchestration_plan"):
         return Node.ROUTE
 
-    # Legacy fallback (for existing flows without human_input_reason)
+    # Legacy fallback for flows without human_input_reason
     if not state.get("customer_id") and state.get("clarification_questions"):
         return Node.VERIFY_INFO
     if state.get("orchestration_plan"):
@@ -163,13 +142,8 @@ def route_after_human_input(state: AgentState) -> str:
     return Node.PLANNER
 
 
-# ============================================
-# GRAPH CONSTRUCTION
-# ============================================
-
 def _register_nodes(workflow: StateGraph, enable_verification: bool):
     """Register all nodes in the graph."""
-    # Infrastructure nodes
     workflow.add_node(Node.BOOTSTRAP, bootstrap_node)
     workflow.add_node(Node.PLANNER, planner_node)
     workflow.add_node(Node.ROUTE, adaptive_router_node)
@@ -179,17 +153,14 @@ def _register_nodes(workflow: StateGraph, enable_verification: bool):
     if enable_verification:
         workflow.add_node(Node.VERIFY_INFO, verify_info_node)
 
-    # Workers — from registry
     for name, node_fn in WORKER_REGISTRY.items():
         workflow.add_node(name, node_fn)
 
 
 def _register_edges(workflow: StateGraph, enable_verification: bool):
     """Register all edges in the graph."""
-    # ── Entry ──
     workflow.set_entry_point(Node.BOOTSTRAP)
 
-    # ── Bootstrap → planner (or verify_info) ──
     if enable_verification:
         workflow.add_conditional_edges(Node.BOOTSTRAP, route_after_bootstrap, {
             Node.VERIFY_INFO: Node.VERIFY_INFO,
@@ -202,16 +173,13 @@ def _register_edges(workflow: StateGraph, enable_verification: bool):
     else:
         workflow.add_edge(Node.BOOTSTRAP, Node.PLANNER)
 
-    # ── Planner → first worker (or END) ──
     planner_edges = {w: w for w in VALID_WORKERS}
     planner_edges["END"] = END
     workflow.add_conditional_edges(Node.PLANNER, route_from_planner, planner_edges)
 
-    # ── All workers → route ──
     for worker in VALID_WORKERS:
         workflow.add_edge(worker, Node.ROUTE)
 
-    # ── Route → next destination ──
     route_edges = {w: w for w in VALID_WORKERS}
     route_edges.update({
         Node.SYNTHESIZE: Node.SYNTHESIZE,
@@ -220,10 +188,8 @@ def _register_edges(workflow: StateGraph, enable_verification: bool):
     })
     workflow.add_conditional_edges(Node.ROUTE, route_from_orchestrator, route_edges)
 
-    # ── Synthesize → END ──
     workflow.add_edge(Node.SYNTHESIZE, END)
 
-    # ── Human input → route/planner/verify_info ──
     hi_edges = {
         Node.ROUTE: Node.ROUTE,
         Node.PLANNER: Node.PLANNER,
@@ -248,10 +214,6 @@ def create_graph_with_checkpointer(checkpointer=None, enable_verification: bool 
     _register_edges(workflow, enable_verification)
     return workflow.compile(checkpointer=checkpointer)
 
-
-# ============================================
-# DEFAULT GRAPH INSTANCE
-# ============================================
 
 graph = create_graph(enable_verification=False)
 supervisor_agent = graph  # Alias for langgraph.json

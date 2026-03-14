@@ -1,7 +1,8 @@
 """
-tool_executor.py - Ejecuta tools registrados en ToolRegistry con lifecycle completo.
+tool_executor.py
 
-Lifecycle: PLANNED → VALIDATING → EXECUTING → VERIFYING → COMPLETED / FAILED / TIMEOUT / BLOCKED / VERIFICATION_FAILED
+Executes registered tools with full lifecycle:
+PLANNED -> VALIDATING -> EXECUTING -> VERIFYING -> COMPLETED/FAILED/TIMEOUT/BLOCKED
 """
 
 import time
@@ -13,10 +14,6 @@ from datetime import datetime, timezone
 from src.agent.tools.tool_registry import ToolRegistry, ToolSpec, ToolType, SafetyLevel
 
 
-# ---------------------------------------------------------------------------
-# Result
-# ---------------------------------------------------------------------------
-
 @dataclass
 class ToolResult:
     tool_name: str
@@ -27,8 +24,7 @@ class ToolResult:
     duration_ms: float = 0
     error: Optional[str] = None
     retries_used: int = 0
-    phase: str = "completed"
-    # completed | failed | timeout | verification_failed | blocked
+    phase: str = "completed"  # completed | failed | timeout | verification_failed | blocked
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -44,7 +40,7 @@ class ToolResult:
         }
 
     def to_log_entry(self) -> Dict[str, Any]:
-        """Convert to format compatible with AgentState.tool_execution_log."""
+        """Convert to AgentState.tool_execution_log format."""
         return {
             "tool": self.tool_name,
             "phase": self.phase,
@@ -57,32 +53,26 @@ class ToolResult:
         }
 
 
-# Internal kwargs that must NOT reach tool functions
 _INTERNAL_KWARGS = frozenset({
     "_stream_callback",
     "_session_id",
     "_worker",
-    "station",  # Used by safety gate, not by tool functions
+    "station",  # used by safety gate, not by tool functions
 })
 
 
 def _filter_kwargs(kwargs: dict) -> dict:
-    """Remove internal flags before passing to tool/verify functions."""
+    """Strip internal flags before passing to tool/verify functions."""
     return {k: v for k, v in kwargs.items() if k not in _INTERNAL_KWARGS}
 
 
-# ---------------------------------------------------------------------------
-# Executor
-# ---------------------------------------------------------------------------
-
 class ToolExecutor:
-    """Ejecuta tools con timeout, retry, verificación y streaming de estados."""
+    """Runs tools with timeout, retry, verification, and lifecycle streaming."""
 
     def __init__(self, stream_callback: Optional[Callable] = None):
         self._callback = stream_callback
 
     def _emit(self, tool_name: str, phase: str, detail: Optional[Dict] = None) -> None:
-        """Emite evento de lifecycle si hay callback registrado."""
         if not self._callback:
             return
         payload = {
@@ -96,12 +86,9 @@ class ToolExecutor:
         try:
             self._callback(payload)
         except Exception:
-            pass  # No romper ejecución por fallo de callback
+            pass
 
     def execute(self, tool_name: str, **kwargs) -> ToolResult:
-        """Ejecuta un tool con lifecycle completo."""
-
-        # --- 1. Lookup ---
         spec = ToolRegistry.get(tool_name)
         if spec is None:
             return ToolResult(
@@ -117,10 +104,8 @@ class ToolExecutor:
             "timeout_ms": spec.timeout_ms,
         })
 
-        # --- 2. Validation ---
         self._emit(tool_name, "validating")
 
-        # --- 3. Execute with timeout and retries ---
         clean_kwargs = _filter_kwargs(kwargs)
         max_attempts = 1 + spec.retries
         last_error = None
@@ -153,7 +138,6 @@ class ToolExecutor:
                 })
                 continue
 
-            # Execution succeeded — proceed to verification
             tool_result = ToolResult(
                 tool_name=tool_name,
                 success=True,
@@ -163,11 +147,9 @@ class ToolExecutor:
                 phase="completed",
             )
 
-            # --- 4. Verification ---
             if spec.verify_fn is not None:
                 self._emit(tool_name, "verifying")
-                # Small delay for hardware/bridge to settle
-                time.sleep(0.3)
+                time.sleep(0.3)  # let hardware/bridge settle
                 try:
                     v_result = spec.verify_fn(**clean_kwargs)
                     tool_result.verification_result = v_result
@@ -175,7 +157,6 @@ class ToolExecutor:
                     tool_result.verified = verified
 
                     if not verified:
-                        # Ejecución OK pero verificación falló: NOT full success
                         tool_result.success = False
                         tool_result.phase = "verification_failed"
                         reason = v_result.get("reason", "Verificación falló") if isinstance(v_result, dict) else "Verificación falló"
@@ -214,7 +195,6 @@ class ToolExecutor:
 
     @staticmethod
     def _run_with_timeout(fn: Callable, kwargs: dict, timeout_ms: int) -> Any:
-        """Ejecuta fn(**kwargs) con timeout usando ThreadPoolExecutor."""
         timeout_s = timeout_ms / 1000
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(fn, **kwargs)
